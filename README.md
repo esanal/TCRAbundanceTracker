@@ -24,6 +24,8 @@ The app looks for these columns (case-insensitive):
 pip install -r requirements.txt
 streamlit run app.py
 ```
+## Run on streamlit.io
+https://tcrexplorer.streamlit.app/
 
 ## Large uploads
 To allow CSV uploads larger than 200 MB, Streamlit reads the `.streamlit/config.toml`

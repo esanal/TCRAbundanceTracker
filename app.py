@@ -11,7 +11,7 @@ from pyvis.network import Network
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
 
 CANONICAL_COLUMNS: Dict[str, List[str]] = {
-    "mouse": ["mouse", "mouse_id", "animal", "animal_id"],
+    "mouse": ["mouse", "individual", "mouse_id", "animal", "animal_id"],
     "organ": ["organ", "tissue"],
     "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype"],
     "chain": ["chain", "tcr_chain"],

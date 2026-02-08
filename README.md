@@ -1,6 +1,6 @@
 # TCR Abundance Explorer
 
-An interactive Streamlit app for exploring TCR clonotype abundance across mice, organs, cell types, and chains.
+An interactive Streamlit app for exploring TCR clonotype abundance across mice, individual, organs, cell types, and chains.
 
 ## Features
 - Filter by mouse, organ, cell type, and chain.
@@ -12,6 +12,7 @@ An interactive Streamlit app for exploring TCR clonotype abundance across mice, 
 ## Expected columns
 The app looks for these columns (case-insensitive):
 - `mouse`
+- `individual`
 - `organ`
 - `cell_type`
 - `chain`

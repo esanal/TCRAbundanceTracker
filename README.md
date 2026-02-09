@@ -31,10 +31,6 @@ https://tcrexplorer.streamlit.app/
 ## Large uploads
 To allow CSV uploads larger than 200 MB, Streamlit reads the `.streamlit/config.toml`
 file in this repo (set to 1024 MB). Adjust `maxUploadSize` if you need a different limit.
-
-## Troubleshooting
-If you see `ValueError: numpy.dtype size changed`, reinstall from scratch to ensure compatible
-binary wheels are installed (the requirements pin NumPy <2.0 and pandas <2.2).
 ```bash
 pip uninstall -y numpy pandas pyarrow
 pip install -r requirements.txt

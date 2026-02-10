@@ -120,6 +120,11 @@ def build_occurrence_network_html(
 
 st.title("TCR Abundance Explorer")
 
+with st.sidebar:
+    st.header("Data")
+    use_example = st.checkbox("Use example dataset", value=True)
+    uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
+
 st.markdown(
     """
 Upload a CSV file of clonotype sequences with mouse, organ, cell type, chain, and abundance.
@@ -127,7 +132,12 @@ The app will help you explore clonotypes per mouse and visualize abundance patte
 """
 )
 
-uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
+if use_example:
+    st.info(
+        "Using the bundled example dataset (test.abundance.1.csv). "
+        "Uncheck 'Use example dataset' to upload a new file."
+    )
+    uploaded_file = "test.abundance.1.csv"
 
 if uploaded_file is None:
     st.info("Upload a CSV file to begin.")

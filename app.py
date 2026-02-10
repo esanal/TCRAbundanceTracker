@@ -38,36 +38,9 @@ def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
     return df, mapping
 
 
-#def validate_columns(df: pd.DataFrame) -> Tuple[bool, List[str]]:
-#    missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-#    return len(missing) == 0, missing
-
-# Expected types
-COLUMN_TYPES = {
-    "mouse": str,
-    "organ": str,
-    "cell_type": str,
-    "chain": str,
-    "clonotype": str,
-    "abundance": "numeric"
-}
-
-def validate_columns(df: pd.DataFrame) -> Tuple[bool, List[str], pd.DataFrame]:
+def validate_columns(df: pd.DataFrame) -> Tuple[bool, List[str]]:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-    if missing:
-        return False, missing, df
-    
-    type_errors = []
-    df_copy = df.copy() # Avoid modifying the original
-    
-    for col, expected_type in COLUMN_TYPES.items():
-        try:
-            # Cast
-            df_copy[col] = df_copy[col].astype(expected_type)
-        except (ValueError, TypeError):
-            type_errors.append(f"{col} (could not cast to {expected_type.__name__})")
-            
-    return len(type_errors) == 0, type_errors, df_copy
+    return len(missing) == 0, missing
 
 
 def build_occurrence_network_html(

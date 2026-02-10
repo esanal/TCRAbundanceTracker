@@ -75,9 +75,12 @@ def build_occurrence_network_html(
     for organ_cell in organ_nodes:
         net.add_node(
             organ_cell,
-            label=organ_cell,
+            label=wrapped_label,
             color="#1f77b4",
             title=f"Organ/Cell: {organ_cell}",
+            shape="box",
+            margin=10,
+            font={"size": 12}
         )
 
     for _, row in edge_df.iterrows():

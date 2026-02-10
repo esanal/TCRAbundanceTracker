@@ -119,6 +119,9 @@ def build_occurrence_network_html(
         }
         """
     )
+
+    net.show_buttons(filter_=['physics'])
+    
     return net.generate_html()
 
 

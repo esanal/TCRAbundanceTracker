@@ -1,6 +1,7 @@
 import io
+import json
 from typing import Dict, List, Tuple
-
+import networkx as nx
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -44,6 +45,11 @@ def build_occurrence_network_html(
     df: pd.DataFrame,
     top_clonotypes: List[str],
     show_clonotype_labels: bool,
+    min_edge_abundance: float,
+    gravity: int,
+    spring_length: int,
+    edge_width_scale: float,
+    organ_box_margin: int,
 ) -> str:
     filtered = df[df["clonotype"].isin(top_clonotypes)].copy()
     edge_df = (
@@ -51,7 +57,11 @@ def build_occurrence_network_html(
     )
     # Convert to numeric and filter out zero/negative abundances
     edge_df["abundance"] = pd.to_numeric(edge_df["abundance"], errors="coerce").fillna(0)
-    edge_df = edge_df[edge_df["abundance"] > 0].copy()
+    #edge_df = edge_df[edge_df["abundance"] > 0].copy()
+    edge_df = edge_df[edge_df["abundance"] >= min_edge_abundance].copy()
+
+    if edge_df.empty:
+        return ""
 
     net = Network(height="550px", width="100%", bgcolor="#ffffff", font_color="#222222")
     net.barnes_hut()
@@ -81,6 +91,7 @@ def build_occurrence_network_html(
             title=f"Organ/Cell: {organ_cell}",
             shape="box",
             margin=10,
+            margin=organ_box_margin,
             font={"size": 12}
         )
 
@@ -89,39 +100,78 @@ def build_occurrence_network_html(
             row["clonotype"],
             row["organ_cell"],
             value=row["abundance"],
+            width=max(1, row["abundance"] * edge_width_scale),
             title=f"Abundance: {row['abundance']}",
         )
 
-    net.set_options(
-        """
-        {
-          "physics": {
-            "enabled": true,
+    options = {
+        "physics": {
+            "enabled": True,
             "barnesHut": {
-              "gravitationalConstant": -2000,
-              "springLength": 160
-            }
-          },
-          "nodes": {
+              "gravitationalConstant": gravity,
+                "springLength": spring_length,
+            },
+        },
+        "nodes": {
             "shape": "dot",
             "size": 12,
-            "font": { "size": 12 }
-          },
-          "edges": {
-            "color": { "inherit": true },
-            "smooth": false
-          },
-          "interaction": {
-            "dragNodes": true,
-            "dragView": true,
-            "zoomView": true
-          }
-        }
-        """
-    )
+            "font": {"size": 12},
+        },
+        "edges": {
+            "color": {"inherit": True},
+            "smooth": False,
+        },
+        "interaction": {
+            "dragNodes": True,
+            "dragView": True,
+            "zoomView": True,
+        },
+    }
+    net.set_options(json.dumps(options))
     
     return net.generate_html()
 
+
+def calculate_network_metrics(
+    df: pd.DataFrame,
+    top_clonotypes: List[str],
+    min_edge_abundance: float,
+) -> pd.DataFrame:
+    filtered = df[df["clonotype"].isin(top_clonotypes)].copy()
+    edge_df = (
+        filtered.groupby(["clonotype", "organ_cell"], as_index=False)["abundance"].sum()
+    )
+    edge_df["abundance"] = pd.to_numeric(edge_df["abundance"], errors="coerce").fillna(0)
+    edge_df = edge_df[edge_df["abundance"] >= min_edge_abundance].copy()
+
+    if edge_df.empty:
+        return pd.DataFrame()
+
+    graph = nx.Graph()
+    for _, row in edge_df.iterrows():
+        graph.add_edge(row["clonotype"], row["organ_cell"], weight=row["abundance"])
+
+    betweenness = nx.betweenness_centrality(graph, normalized=True, weight=None)
+    degree = dict(graph.degree())
+    weighted_degree = dict(graph.degree(weight="weight"))
+
+    records = []
+    for node in graph.nodes:
+        node_type = "clonotype" if node in set(edge_df["clonotype"].unique()) else "organ/cell"
+        records.append(
+            {
+                "node": node,
+                "node_type": node_type,
+                "degree": degree.get(node, 0),
+                "weighted_degree": weighted_degree.get(node, 0.0),
+                "betweenness_centrality": betweenness.get(node, 0.0),
+            }
+        )
+
+    metrics_df = pd.DataFrame(records).sort_values(
+        by=["betweenness_centrality", "weighted_degree"], ascending=False
+    )
+    return metrics_df
 
 st.title("TCR Abundance Explorer")
 
@@ -292,14 +342,111 @@ st.caption(
     "Edges appear when a clonotype is detected in an organ/cell subset, and "
     "thicker connections reflect higher summed abundance."
 )
-show_clonotype_labels = st.checkbox("Show clonotype labels", value=True)
+# show_clonotype_labels = st.checkbox("Show clonotype labels", value=True)
+network_control_cols = st.columns(2)
+with network_control_cols[0]:
+    show_clonotype_labels = st.checkbox("Show clonotype labels", value=True)
+    min_edge_abundance = st.slider(
+        "Minimum edge abundance",
+        min_value=0.0,
+        max_value=float(filtered["abundance"].max()),
+        value=0.0,
+        step=1.0,
+        help="Filter out low-abundance clonotype-to-organ/cell edges.",
+    )
+    edge_width_scale = st.slider(
+        "Edge width scale",
+        min_value=0.05,
+        max_value=1.0,
+        value=0.2,
+        step=0.05,
+        help="Increase to make high-abundance edges visually thicker.",
+    )
+with network_control_cols[1]:
+    gravity = st.slider(
+        "Node repulsion (gravity)",
+        min_value=-5000,
+        max_value=-500,
+        value=-2000,
+        step=100,
+        help="More negative values push nodes farther apart.",
+    )
+    spring_length = st.slider(
+        "Spring length",
+        min_value=50,
+        max_value=400,
+        value=160,
+        step=10,
+        help="Higher values increase preferred distance between connected nodes.",
+    )
+    organ_box_margin = st.slider(
+        "Organ/cell label padding",
+        min_value=5,
+        max_value=30,
+        value=10,
+        step=1,
+        help="Padding inside rectangular organ/cell nodes.",
+    )
+    
 network_html = build_occurrence_network_html(
     filtered,
     selected_clonotypes,
     show_clonotype_labels=show_clonotype_labels,
+    min_edge_abundance=min_edge_abundance,
+    gravity=gravity,
+    spring_length=spring_length,
+    edge_width_scale=edge_width_scale,
+    organ_box_margin=organ_box_margin,
 )
-components.html(network_html, height=580, scrolling=True)
 
+if network_html:
+    components.html(network_html, height=580, scrolling=True)
+else:
+    st.warning(
+        "No edges remain after applying the current minimum edge abundance threshold. "
+        "Lower the threshold to render the network."
+    )
+
+st.subheader("Network Metrics")
+st.caption(
+    "Centrality metrics are computed on the displayed bipartite network. "
+    "Use them to identify connector clonotypes and high-traffic organ/cell nodes."
+)
+# components.html(network_html, height=580, scrolling=True)
+metrics_df = calculate_network_metrics(
+    filtered,
+    selected_clonotypes,
+    min_edge_abundance=min_edge_abundance,
+)
+
+if metrics_df.empty:
+    st.info("No network metrics available for the current edge threshold.")
+else:
+    metric_col1, metric_col2 = st.columns(2)
+    with metric_col1:
+        top_connector = metrics_df.iloc[0]
+        st.metric(
+            "Top node by betweenness",
+            top_connector["node"],
+            f"{top_connector['betweenness_centrality']:.3f}",
+        )
+    with metric_col2:
+        st.metric(
+            "Nodes in current network",
+            f"{metrics_df['node'].nunique()}",
+            f"{(metrics_df['node_type'] == 'clonotype').sum()} clonotypes",
+        )
+
+    st.dataframe(
+        metrics_df.style.format(
+            {
+                "weighted_degree": "{:.2f}",
+                "betweenness_centrality": "{:.4f}",
+            }
+        ),
+        width="stretch",
+    )
+    
 st.subheader("Filtered Data")
 st.dataframe(filtered, width="stretch")
 

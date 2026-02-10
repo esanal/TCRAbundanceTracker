@@ -73,6 +73,7 @@ def build_occurrence_network_html(
         )
         
     for organ_cell in organ_nodes:
+        wrapped_label = organ_cell.replace(" | ", "\n")
         net.add_node(
             organ_cell,
             label=wrapped_label,

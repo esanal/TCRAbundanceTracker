@@ -90,7 +90,6 @@ def build_occurrence_network_html(
             color="#1f77b4",
             title=f"Organ/Cell: {organ_cell}",
             shape="box",
-            margin=10,
             margin=organ_box_margin,
             font={"size": 12}
         )

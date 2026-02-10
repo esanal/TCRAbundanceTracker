@@ -13,7 +13,7 @@ st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
 CANONICAL_COLUMNS: Dict[str, List[str]] = {
     "mouse": ["mouse", "individual", "mouse_id", "animal", "animal_id"],
     "organ": ["organ", "tissue"],
-    "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype"],
+    "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype", "cell.type"],
     "chain": ["chain", "tcr_chain"],
     "clonotype": ["clonotype", "clonetype", "cdr3", "sequence", "tcr", "nSeqCDR3"],
     "abundance": ["abundance", "count", "frequency", "freq"],

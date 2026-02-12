@@ -346,7 +346,7 @@ st.caption(
 # show_clonotype_labels = st.checkbox("Show clonotype labels", value=True)
 network_control_cols = st.columns(2)
 with network_control_cols[0]:
-    show_clonotype_labels = st.checkbox("Show clonotype labels", value=True)
+    show_clonotype_labels = st.checkbox("Show clonotype labels", value=False)
     min_edge_abundance = st.slider(
         "Minimum edge abundance",
         min_value=0.0,

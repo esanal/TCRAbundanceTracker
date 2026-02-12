@@ -120,7 +120,7 @@ def build_occurrence_network_html(
             "color": {
                 "highlight": {
                     "border": "FF0000",
-                    "background": "FFCCCC"
+                    "background": "FF5555"
                 }
             }
         },

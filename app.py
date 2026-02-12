@@ -332,7 +332,7 @@ line_fig = px.line(
     y="abundance",
     color="clonotype",
     markers=True,
-    labels={"organ_cell": "Organ/Cell", "abundance": "Abundance"},
+    labels={"organ_cell": "Organ/Cell", "abundance": "% pool size"},
 )
 line_fig.update_layout(height=400)
 st.plotly_chart(line_fig, width="stretch")

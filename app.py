@@ -267,10 +267,10 @@ max_clonotypes = (
 )
 max_clonotypes = max(1, max_clonotypes)
 top_n = st.slider(
-    "Top clonotypes",
+    "Select number of largest clonotypes to display",
     min_value=1,
     max_value=max_clonotypes,
-    value=min(15, max_clonotypes),
+    value=min(10, max_clonotypes),
     step=1,
 )
 clono_totals = (

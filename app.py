@@ -80,7 +80,7 @@ def build_occurrence_network_html(
             clonotype,
             label=display_label,
             color="#ff7f0e",
-            title=f"Clonotype: {clonotype}", # Tooltip still works!
+            title=f"Clonotype: {clonotype}",
             font={"size": display_size}
         )
         
@@ -117,12 +117,19 @@ def build_occurrence_network_html(
             "shape": "dot",
             "size": 12,
             "font": {"size": 12},
+            "color": {
+                "highlight": {
+                    "border": "FF0000",
+                    "background": "FFCCCC"
+                }
+            }
         },
         "edges": {
             "color": {"inherit": True},
             "smooth": False,
         },
         "interaction": {
+            "navigationButtons": True,
             "dragNodes": True,
             "dragView": True,
             "zoomView": True,

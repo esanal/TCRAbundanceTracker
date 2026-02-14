@@ -476,7 +476,8 @@ if "sample" in filtered.columns:
 
 st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
 st.caption(
-    "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently."
+    "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
+    "Y-axis shows percent of lineage pool size."
 )
 lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
 lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
@@ -499,13 +500,20 @@ for lineage in ["CD4", "CD8"]:
         on=["clonotype", "organ_cell"],
         how="left",
     ).fillna({"abundance": 0})
+    lineage_pool_size = float(lineage_df["abundance"].sum())
+    if lineage_pool_size > 0:
+        organ_cell_line["pool_pct"] = (
+            organ_cell_line["abundance"] / lineage_pool_size * 100.0
+        )
+    else:
+        organ_cell_line["pool_pct"] = 0.0
     line_fig = px.line(
         organ_cell_line,
         x="organ_cell",
-        y="abundance",
+        y="pool_pct",
         color="clonotype",
         markers=True,
-        labels={"organ_cell": "Organ/Cell", "abundance": "Abundance"},
+        labels={"organ_cell": "Organ/Cell", "pool_pct": "% Pool Size"},
     )
     line_fig.update_layout(height=420)
     line_fig.update_xaxes(

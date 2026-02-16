@@ -9,6 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
 from streamlit.runtime.scriptrunner import get_script_run_ctx
+import math
 
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
 
@@ -24,6 +25,9 @@ CANONICAL_COLUMNS: Dict[str, List[str]] = {
 
 REQUIRED_COLUMNS = ["mouse", "organ", "cell_type", "chain", "clonotype", "abundance"]
 SELECTED_ORGAN_CELL_COLOR = "#d62728"
+DEFAULT_EDGE_WIDTH_SCALE = 0.2
+DEFAULT_GRAVITY = -2200
+DEFAULT_SPRING_LENGTH = 180
 
 
 def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -154,6 +158,8 @@ def build_organ_cell_clonotype_network_html(
     gravity: int,
     spring_length: int,
     edge_width_scale: float,
+    physics_mode: str,
+    node_font_size: int,
 ) -> str:
     if edge_df.empty:
         return ""
@@ -165,13 +171,59 @@ def build_organ_cell_clonotype_network_html(
     )
     net = Network(height="550px", width="100%", bgcolor="#ffffff", font_color="#222222")
 
+    def make_physics_config() -> Dict[str, object]:
+        base = {
+            "enabled": physics_mode != "No physics",
+            "solver": "barnesHut"
+            if physics_mode != "Force Atlas 2"
+            else "forceAtlas2Based",
+            "barnesHut": {
+                "gravitationalConstant": gravity,
+                "centralGravity": 0.3,
+                "springLength": spring_length,
+                "avoidOverlap": 0.5,
+            },
+        }
+        if "Weak repulsion" in physics_mode:
+            base["barnesHut"].update(
+                {
+                    "springLength": spring_length * 1.4,
+                    "gravitationalConstant": gravity * 0.65,
+                    "centralGravity": 0.08,
+                }
+            )
+        elif "Compact clusters" in physics_mode:
+            base["barnesHut"].update(
+                {
+                    "springLength": spring_length * 0.7,
+                    "centralGravity": 0.5,
+                    "avoidOverlap": 0.8,
+                }
+            )
+        elif "Force Atlas 2" in physics_mode:
+            base["forceAtlas2Based"] = {
+                "adjustSizes": False,
+                "centralGravity": 0.01,
+                "springLength": spring_length,
+                "springConstant": 0.01,
+                "damping": 0.6,
+            }
+        elif "No physics" in physics_mode:
+            base["barnesHut"].update({"gravitationalConstant": 0, "springLength": 0})
+        return base
+
     organ_cell_nodes = sorted(edge_df["organ_cell"].unique())
     clonotype_nodes = sorted(edge_df["clonotype"].unique())
+    center_x = 0
+    center_y = 0
+    organ_radius = 250
+    clonotype_radius = 130
 
     max_node_score = max(organ_cell_score_map.values(), default=0.0)
     min_node_size = 18
     size_range = 22
-    for organ_cell in organ_cell_nodes:
+    clonotype_font_size = max(node_font_size - 2, 14)
+    for idx, organ_cell in enumerate(organ_cell_nodes):
         score = float(organ_cell_score_map.get(organ_cell, 0.0))
         normalized = (score / max_node_score) if max_node_score > 0 else 0.0
         node_size = min_node_size + normalized * size_range
@@ -192,11 +244,13 @@ def build_organ_cell_clonotype_network_html(
             shape="box",
             level=0,
             value=node_size + 6 if is_selected else node_size,
-            font={"size": 12, "color": "#ffffff" if is_selected else "#222222"},
+            font={"size": node_font_size, "color": "#ffffff"},
             borderWidth=3 if is_selected else 1,
+            x=center_x + organ_radius * math.cos(2 * math.pi * idx / len(organ_cell_nodes)),
+            y=center_y + organ_radius * math.sin(2 * math.pi * idx / len(organ_cell_nodes)),
         )
 
-    for clonotype in clonotype_nodes:
+    for idx, clonotype in enumerate(clonotype_nodes):
         display_label = clonotype if show_clonotype_labels else " "
         display_size = 12 if show_clonotype_labels else 0
         is_selected_clonotype = clonotype == selected_node
@@ -213,9 +267,11 @@ def build_organ_cell_clonotype_network_html(
                 else "#ff7f0e"
             ),
             title=f"Clonotype: {clonotype}",
-            font={"size": display_size, "color": "#ffffff" if is_selected_clonotype else "#222222"},
+            font={"size": clonotype_font_size, "color": "#ffffff"},
             level=1,
             borderWidth=3 if is_selected_clonotype else 1,
+            x=center_x + clonotype_radius * math.cos(2 * math.pi * idx / len(clonotype_nodes)),
+            y=center_y + clonotype_radius * math.sin(2 * math.pi * idx / len(clonotype_nodes)),
         )
 
     for _, row in edge_df.iterrows():
@@ -228,32 +284,21 @@ def build_organ_cell_clonotype_network_html(
         )
 
     options = {
-        "physics": {
-            "enabled": False,
-            "barnesHut": {
-                "gravitationalConstant": gravity,
-                "springLength": spring_length,
-            },
-        },
+        "physics": make_physics_config(),
         "nodes": {
             "shape": "dot",
             "size": 12,
-            "font": {"size": 12},
+            "font": {"size": node_font_size, "color": "#ffffff"},
             "color": {
                 "highlight": {
                     "border": "FF0000",
-                    "background": "FF5555"
+                    "background": "FF5555",
                 }
-            }
+            },
         },
         "edges": {
             "color": {"inherit": True},
-            "smooth": {
-                "enabled": True,
-                "type": "cubicBezier",
-                "forceDirection": "vertical",
-                "roundness": 0.35,
-            },
+            "smooth": False,
         },
         "interaction": {
             "navigationButtons": True,
@@ -261,22 +306,34 @@ def build_organ_cell_clonotype_network_html(
             "dragView": True,
             "zoomView": True,
         },
-        "layout": {
-            "hierarchical": {
-                "enabled": True,
-                "direction": "UD",
-                "sortMethod": "hubsize",
-                "nodeSpacing": 190,
-                "levelSeparation": 300,
-                "treeSpacing": 260,
-                "blockShifting": True,
-                "edgeMinimization": True,
-                "parentCentralization": True,
-            }
-        },
+        "layout": {"improvedLayout": False},
     }
     net.set_options(json.dumps(options))
     return net.generate_html()
+
+
+def superscript(exponent: int) -> str:
+    sup_digits = {
+        "0": "⁰",
+        "1": "¹",
+        "2": "²",
+        "3": "³",
+        "4": "⁴",
+        "5": "⁵",
+        "6": "⁶",
+        "7": "⁷",
+        "8": "⁸",
+        "9": "⁹",
+    }
+    if exponent == 0:
+        return sup_digits["0"]
+    parts = []
+    if exponent < 0:
+        parts.append("⁻")
+        exponent = abs(exponent)
+    for digit in str(exponent):
+        parts.append(sup_digits.get(digit, digit))
+    return "".join(parts)
 
 
 def calculate_network_metrics(
@@ -401,11 +458,10 @@ if filtered.empty:
 
 filtered["organ_cell"] = filtered["organ"] + " | " + filtered["cell_type"]
 
-summary_cols = st.columns(4)
+summary_cols = st.columns(3)
 summary_cols[0].metric("Clonotypes", filtered["clonotype"].nunique())
 summary_cols[1].metric("Organs", filtered["organ"].nunique())
 summary_cols[2].metric("Cell types", filtered["cell_type"].nunique())
-summary_cols[3].metric("Total abundance", f"{filtered['abundance'].sum():,.0f}")
 
 st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
 organ_cell_options = sorted(filtered["organ_cell"].unique())
@@ -474,10 +530,16 @@ if "sample" in filtered.columns:
     sample_fig.update_layout(height=400)
     st.plotly_chart(sample_fig, use_container_width=True)
 
+pseudo_zero = 1e-5
 st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
 st.caption(
     "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
-    "Y-axis shows percent of lineage pool size."
+    "Y-axis shows percent of the lineage pool size; toggle the log option if needed."
+)
+log_axis = st.checkbox(
+    "Log10 scale",
+    value=True,
+    help="Display % pool size on log10 axis and treat zero values as pseudo 10⁻⁵.",
 )
 lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
 lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
@@ -507,15 +569,47 @@ for lineage in ["CD4", "CD8"]:
         )
     else:
         organ_cell_line["pool_pct"] = 0.0
+    organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct"]
+    if log_axis:
+        organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct_plot"].where(
+            organ_cell_line["pool_pct_plot"] > 0, pseudo_zero
+        )
     line_fig = px.line(
         organ_cell_line,
         x="organ_cell",
-        y="pool_pct",
+        y="pool_pct_plot",
         color="clonotype",
         markers=True,
-        labels={"organ_cell": "Organ/Cell", "pool_pct": "% Pool Size"},
+        labels={"organ_cell": "Organ/Cell", "pool_pct_plot": "% Pool Size"},
     )
-    line_fig.update_layout(height=420)
+    yaxis_config = {
+        "title": "% Pool Size",
+        "type": "log" if log_axis else "linear",
+    }
+    if log_axis:
+        tick_exponents = list(range(-5, 3))
+        yaxis_config.update(
+            {
+                "tickvals": [10 ** exp for exp in tick_exponents],
+                "ticktext": [
+                    "0" if exp == -5 else f"10{superscript(exp)}"
+                    for exp in tick_exponents
+                ],
+                "range": [tick_exponents[0], tick_exponents[-1]],
+            }
+        )
+    else:
+        yaxis_config.setdefault("range", [0, 100])
+    line_fig.update_layout(height=420, yaxis=yaxis_config)
+    if log_axis:
+        line_fig.add_hline(
+            y=pseudo_zero,
+            line_dash="dash",
+            line_color="#888888",
+            annotation_text=f"Pseudo zero (10{superscript(-5)})",
+            annotation_position="bottom right",
+            opacity=0.6,
+        )
     line_fig.update_xaxes(
         tickmode="array",
         tickvals=lineage_organ_cells,
@@ -531,40 +625,43 @@ st.caption(
     "Organ/cell nodes are on the left and clonotypes on the right. "
     "Organ/cell node size reflects total clone-sharing with other organ/cell nodes."
 )
-network_control_cols = st.columns(2)
-with network_control_cols[0]:
+network_cols = st.columns(3)
+with network_cols[0]:
+    physics_mode = st.selectbox(
+        "Network physics preset",
+        [
+            "Balanced (default)",
+            "Weak repulsion (long links)",
+            "Compact clusters (tight)",
+            "Force Atlas 2 (attractive)",
+            "No physics",
+        ],
+        index=0,
+        help="Switch between physics behaviors; presets adjust repulsion/spring behavior.",
+    )
+with network_cols[1]:
     st.caption(f"Network clonotypes: using current top selection ({len(selected_clonotypes)}).")
     show_clonotype_labels = st.checkbox("Show clonotype labels", value=False)
+    node_font_size = st.slider(
+        "Node label font size",
+        min_value=12,
+        max_value=30,
+        value=18,
+        step=1,
+        help="Adjust the font size for organ/cell and clonotype node labels.",
+    )
+with network_cols[2]:
     min_edge_abundance = st.slider(
         "Minimum organ/cell-clonotype edge abundance",
         min_value=0.0,
         max_value=float(filtered["abundance"].max()),
         value=0.0,
         step=1.0,
-        help="Filter out low-abundance organ/cell-clonotype edges.",
+        help="Filter out low-abundance organ/cell/clonotype edges.",
     )
-with network_control_cols[1]:
-    edge_width_scale = st.slider(
-        "Edge width scale",
-        min_value=0.05,
-        max_value=1.0,
-        value=0.2,
-        step=0.05,
-    )
-    gravity = st.slider(
-        "Node repulsion (gravity)",
-        min_value=-5000,
-        max_value=-500,
-        value=-2200,
-        step=100,
-    )
-    spring_length = st.slider(
-        "Spring length",
-        min_value=50,
-        max_value=400,
-        value=180,
-        step=10,
-    )
+edge_width_scale = DEFAULT_EDGE_WIDTH_SCALE
+gravity = DEFAULT_GRAVITY
+spring_length = DEFAULT_SPRING_LENGTH
 
 edge_df = build_organ_cell_clonotype_edges(
     filtered,
@@ -573,6 +670,25 @@ edge_df = build_organ_cell_clonotype_edges(
 )
 pair_df, organ_cell_summary, shared_matrix = calculate_organ_cell_sharing(edge_df)
 selected_metric_node = st.session_state.get("network_metrics_selected_node")
+
+network_html = build_organ_cell_clonotype_network_html(
+    edge_df=edge_df,
+    organ_cell_summary=organ_cell_summary,
+    selected_organ_cell=top_n_scope,
+    selected_node=selected_metric_node,
+    show_clonotype_labels=show_clonotype_labels,
+    gravity=gravity,
+    spring_length=spring_length,
+    edge_width_scale=edge_width_scale,
+    physics_mode=physics_mode,
+    node_font_size=node_font_size,
+)
+if network_html:
+    components.html(network_html, height=580, scrolling=True)
+else:
+    st.warning(
+        "No network edges remain after the current filters and minimum edge threshold."
+    )
 
 st.markdown("**Organ/cell pairs with most shared clonotypes**")
 if pair_df.empty:
@@ -587,23 +703,6 @@ else:
     )
     shared_heatmap.update_layout(height=420)
     st.plotly_chart(shared_heatmap, use_container_width=True)
-
-network_html = build_organ_cell_clonotype_network_html(
-    edge_df=edge_df,
-    organ_cell_summary=organ_cell_summary,
-    selected_organ_cell=top_n_scope,
-    selected_node=selected_metric_node,
-    show_clonotype_labels=show_clonotype_labels,
-    gravity=gravity,
-    spring_length=spring_length,
-    edge_width_scale=edge_width_scale,
-)
-if network_html:
-    components.html(network_html, height=580, scrolling=True)
-else:
-    st.warning(
-        "No network edges remain after the current filters and minimum edge threshold."
-    )
 
 st.subheader("Network Metrics")
 metrics_df = calculate_network_metrics(

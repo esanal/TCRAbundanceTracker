@@ -458,10 +458,12 @@ if filtered.empty:
 
 filtered["organ_cell"] = filtered["organ"] + " | " + filtered["cell_type"]
 
-summary_cols = st.columns(3)
-summary_cols[0].metric("Clonotypes", filtered["clonotype"].nunique())
-summary_cols[1].metric("Organs", filtered["organ"].nunique())
-summary_cols[2].metric("Cell types", filtered["cell_type"].nunique())
+summary_cols = st.columns(5)
+summary_cols[0].metric("Mouse/Individual", mouse_selected)
+summary_cols[1].metric("Chain", chain_selected)
+summary_cols[2].metric("Clonotypes", filtered["clonotype"].nunique())
+summary_cols[3].metric("Organs", filtered["organ"].nunique())
+summary_cols[4].metric("Cell types", filtered["cell_type"].nunique())
 
 st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
 organ_cell_options = sorted(filtered["organ_cell"].unique())

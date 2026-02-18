@@ -399,8 +399,8 @@ if use_example:
         "Using the bundled example dataset (output.csv). "
         "Uncheck 'Use example dataset' to upload a new file."
     )
-    # uploaded_file = "test.abundance.1.csv"
-    uploaded_file = "output.csv"
+    uploaded_file = "test.abundance.1.csv"
+    #uploaded_file = "output.csv"
 
 if uploaded_file is None:
     st.info("Upload a CSV file to begin.")

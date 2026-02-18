@@ -132,7 +132,6 @@ def calculate_organ_cell_sharing(
     )
     return pair_df, organ_cell_summary, shared_matrix
 
-
 def build_highlighted_tick_labels(
     categories: List[str],
     selected_category: str,
@@ -397,10 +396,11 @@ The app will help you explore clonotypes per mouse, organ and cell type and visu
 
 if use_example:
     st.info(
-        "Using the bundled example dataset (test.abundance.1.csv). "
+        "Using the bundled example dataset (output.csv). "
         "Uncheck 'Use example dataset' to upload a new file."
     )
-    uploaded_file = "test.abundance.1.csv"
+    # uploaded_file = "test.abundance.1.csv"
+    uploaded_file = "output.csv"
 
 if uploaded_file is None:
     st.info("Upload a CSV file to begin.")
@@ -415,7 +415,6 @@ except Exception as exc:  # pragma: no cover - UI validation
     st.stop()
 
 df, mapping = normalize_columns(df)
-
 valid, missing = validate_columns(df)
 if not valid:
     st.error(
@@ -434,6 +433,9 @@ df["abundance"] = pd.to_numeric(df["abundance"], errors="coerce").fillna(0.0)
 with st.sidebar:
     st.header("Filters")
     mouse_selected = st.selectbox("Mouse", sorted(df["mouse"].unique()))
+    chain_selected = st.selectbox(
+        "Chain", sorted(df["chain"].unique()))
+
     organ_selected = st.multiselect(
         "Organ", sorted(df["organ"].unique()), default=sorted(df["organ"].unique())
     )
@@ -442,14 +444,12 @@ with st.sidebar:
         sorted(df["cell_type"].unique()),
         default=sorted(df["cell_type"].unique()),
     )
-    chain_selected = st.multiselect(
-        "Chain", sorted(df["chain"].unique()), default=sorted(df["chain"].unique())
-    )
+
 filtered = df[
     (df["mouse"] == mouse_selected)
     & (df["organ"].isin(organ_selected))
     & (df["cell_type"].isin(cell_selected))
-    & (df["chain"].isin(chain_selected))
+    & (df["chain"] == chain_selected)
 ].copy()
 
 if filtered.empty:
@@ -512,7 +512,7 @@ heatmap_fig.update_xaxes(
     ),
 )
 
-st.plotly_chart(heatmap_fig, use_container_width=True)
+st.plotly_chart(heatmap_fig, width="stretch")
 
 if "sample" in filtered.columns:
     st.subheader("Abundance by Sample")
@@ -528,7 +528,7 @@ if "sample" in filtered.columns:
         labels={"abundance": "Abundance", "sample": "Sample"},
     )
     sample_fig.update_layout(height=400)
-    st.plotly_chart(sample_fig, use_container_width=True)
+    st.plotly_chart(sample_fig, width="stretch")
 
 pseudo_zero = 1e-5
 st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
@@ -550,18 +550,20 @@ for lineage in ["CD4", "CD8"]:
         st.info(f"No {lineage} cells found for current filters.")
         continue
     lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
-    lineage_line_df = lineage_df.groupby(
-        ["clonotype", "organ_cell"],
-        as_index=False,
-    )["abundance"].sum()
-    organ_cell_all = pd.DataFrame({"organ_cell": lineage_organ_cells})
-    clonotype_all = pd.DataFrame({"clonotype": selected_clonotypes})
-    line_grid = clonotype_all.merge(organ_cell_all, how="cross")
-    organ_cell_line = line_grid.merge(
-        lineage_line_df,
-        on=["clonotype", "organ_cell"],
-        how="left",
-    ).fillna({"abundance": 0})
+    # 1. Pivot to create the grid automatically (clonotypes x organ_cells)
+    # This handles the "missing" combinations by filling them with 0 immediately
+    lineage_pivot = lineage_df.pivot_table(
+        index="clonotype", 
+        columns="organ_cell", 
+        values="abundance", 
+        aggfunc="sum", 
+        fill_value=0
+    ).reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0)
+    # 2. Flatten back to "long" format for Plotly
+    organ_cell_line = lineage_pivot.reset_index().melt(
+        id_vars="clonotype", 
+        value_name="abundance"
+    )
     lineage_pool_size = float(lineage_df["abundance"].sum())
     if lineage_pool_size > 0:
         organ_cell_line["pool_pct"] = (
@@ -618,7 +620,8 @@ for lineage in ["CD4", "CD8"]:
             top_n_scope,
         ),
     )
-    st.plotly_chart(line_fig, use_container_width=True)
+    st.plotly_chart(line_fig, width="stretch")
+
 
 st.subheader("Hierarchical Organ/Cell-Clonotype Network")
 st.caption(
@@ -702,7 +705,7 @@ else:
         aspect="auto",
     )
     shared_heatmap.update_layout(height=420)
-    st.plotly_chart(shared_heatmap, use_container_width=True)
+    st.plotly_chart(shared_heatmap, width="stretch")
 
 st.subheader("Network Metrics")
 metrics_df = calculate_network_metrics(

@@ -591,8 +591,6 @@ for lineage in ["CD4", "CD8"]:
             y=pseudo_zero,
             line_dash="dash",
             line_color="#888888",
-            annotation_text=f"Pseudo zero (10{superscript(-5)})",
-            annotation_position="bottom right",
             opacity=0.6,
         )
     line_fig.update_xaxes(

@@ -19,8 +19,7 @@ CANONICAL_COLUMNS: Dict[str, List[str]] = {
     "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype", "cell.type"],
     "chain": ["chain", "tcr_chain"],
     "clonotype": ["clonotype", "clonetype", "cdr3", "sequence", "tcr", "nSeqCDR3"],
-    "abundance": ["abundance", "count", "frequency", "freq"],
-    "sample": ["sample", "sample_id", "sample id", "sample_name"],
+    "abundance": ["abundance", "count", "frequency", "freq"]
 }
 
 REQUIRED_COLUMNS = ["mouse", "organ", "cell_type", "chain", "clonotype", "abundance"]
@@ -410,7 +409,7 @@ if uploaded_file is None:
 
 try:
     df = pd.read_csv(uploaded_file)
-except Exception as exc:  # pragma: no cover - UI validation
+except Exception as exc:
     st.error(f"Unable to read file: {exc}")
     st.stop()
 
@@ -423,8 +422,6 @@ if not valid:
     st.write("Detected columns:", list(df.columns))
     st.stop()
 
-if "sample" not in df.columns:
-    st.warning("No sample column detected; sample-based charts will be hidden.")
 
 for col in ["mouse", "organ", "cell_type", "chain", "clonotype"]:
     df[col] = df[col].astype(str)
@@ -515,22 +512,6 @@ heatmap_fig.update_xaxes(
 )
 
 st.plotly_chart(heatmap_fig, width="stretch")
-
-if "sample" in filtered.columns:
-    st.subheader("Abundance by Sample")
-    sample_df = (
-        filtered.groupby(["sample", "organ"], as_index=False)["abundance"].sum()
-    )
-    sample_fig = px.bar(
-        sample_df,
-        x="sample",
-        y="abundance",
-        color="organ",
-        barmode="stack",
-        labels={"abundance": "Abundance", "sample": "Sample"},
-    )
-    sample_fig.update_layout(height=400)
-    st.plotly_chart(sample_fig, width="stretch")
 
 pseudo_zero = 1e-5
 st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")

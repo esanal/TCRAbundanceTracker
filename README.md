@@ -22,36 +22,10 @@ The app looks for these columns (case-insensitive):
 
 ## Run locally
 ```bash
-uv sync --frozen
-uv run streamlit run app.py
+streamlit run app.py
 ```
 
-## Package as a single executable (Windows/macOS)
-PyInstaller can bundle this app into a one-file executable that launches Streamlit automatically.
-The build script uses `uv` and pulls `pyinstaller` through `uv run --with`.
-
-### macOS/Linux
-```bash
-./build_executable.sh
-```
-
-### Windows (PowerShell)
-```powershell
-./build_executable.ps1
-```
-
-Outputs:
-- macOS: `dist/TCRAbundanceExplorer`
-- Windows: `dist/TCRAbundanceExplorer.exe`
-
-Important: cross-compiling is not supported by PyInstaller. Build on macOS for macOS binaries and on Windows for Windows binaries.
-
-### CI build for both platforms
-A GitHub Actions workflow is included at `.github/workflows/build-executables.yml`.
-- Run it manually (`workflow_dispatch`) or push a tag like `v1.0.0`.
-- Download artifacts named `TCRAbundanceExplorer-macos` and `TCRAbundanceExplorer-windows`.
-
-## Run on streamlit.io
+# Run on streamlit.io
 https://tcrexplorer.streamlit.app/
 
 ## Large uploads

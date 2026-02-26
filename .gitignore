@@ -1,1 +1,6 @@
 output.csv
+node_modules/
+dist/stlite/
+build/electron/
+build/pypackage/
+*.tsbuildinfo

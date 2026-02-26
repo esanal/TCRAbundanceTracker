@@ -1,10 +1,12 @@
 import io
 import json
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
@@ -27,6 +29,26 @@ SELECTED_ORGAN_CELL_COLOR = "#d62728"
 DEFAULT_EDGE_WIDTH_SCALE = 0.2
 DEFAULT_GRAVITY = -2200
 DEFAULT_SPRING_LENGTH = 180
+EXAMPLE_DATASET_FILENAME = "output.csv"
+FALLBACK_EXAMPLE_CSV = """mouse,organ,cell_type,chain,clonotype,abundance,sample
+MouseA,Spleen,CD4,TCRB,CLN001,120,S1
+MouseA,Spleen,CD8,TCRB,CLN002,80,S1
+MouseA,Lung,CD4,TCRB,CLN001,40,S2
+MouseA,Lung,CD8,TCRB,CLN003,65,S2
+MouseB,Spleen,CD4,TCRA,CLN010,95,S3
+MouseB,Lung,CD8,TCRA,CLN011,55,S4
+"""
+
+
+def load_example_dataframe() -> pd.DataFrame:
+    example_path_candidates = [
+        Path(EXAMPLE_DATASET_FILENAME),
+        Path(__file__).resolve().parent / EXAMPLE_DATASET_FILENAME,
+    ]
+    for path in example_path_candidates:
+        if path.exists():
+            return pd.read_csv(path)
+    return pd.read_csv(io.StringIO(FALLBACK_EXAMPLE_CSV))
 
 
 def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -379,6 +401,138 @@ def calculate_network_metrics(
     return metrics_df
 
 
+def _arc_positions(labels: List[str], start_deg: float, end_deg: float) -> Dict[str, Tuple[float, float]]:
+    if not labels:
+        return {}
+    if len(labels) == 1:
+        angle = math.radians((start_deg + end_deg) / 2.0)
+        return {labels[0]: (math.cos(angle), math.sin(angle))}
+    span = end_deg - start_deg
+    coords: Dict[str, Tuple[float, float]] = {}
+    for idx, label in enumerate(labels):
+        angle_deg = start_deg + (span * idx / (len(labels) - 1))
+        angle = math.radians(angle_deg)
+        coords[label] = (math.cos(angle), math.sin(angle))
+    return coords
+
+
+def build_entity_chord_figure(
+    edge_df: pd.DataFrame,
+    only_shared_clones: bool,
+    max_clonotypes: int,
+) -> Tuple[Optional[go.Figure], pd.DataFrame]:
+    if edge_df.empty:
+        return None, pd.DataFrame()
+
+    clone_summary = (
+        edge_df.groupby("clonotype", as_index=False)
+        .agg(
+            organ_cell_count=("organ_cell", "nunique"),
+            total_abundance=("abundance", "sum"),
+        )
+        .sort_values(["organ_cell_count", "total_abundance"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+
+    if only_shared_clones:
+        clone_summary = clone_summary[clone_summary["organ_cell_count"] >= 2].copy()
+
+    if clone_summary.empty:
+        return None, pd.DataFrame()
+
+    selected_clones = clone_summary.head(max_clonotypes)["clonotype"].tolist()
+    chord_edges = edge_df[edge_df["clonotype"].isin(selected_clones)].copy()
+    if chord_edges.empty:
+        return None, pd.DataFrame()
+
+    organ_nodes = sorted(chord_edges["organ_cell"].unique())
+    clone_nodes = (
+        clone_summary.set_index("clonotype")
+        .loc[selected_clones]
+        .sort_values(["organ_cell_count", "total_abundance"], ascending=[False, False])
+        .index.tolist()
+    )
+    organ_pos = _arc_positions(organ_nodes, 110, 250)
+    clone_pos = _arc_positions(clone_nodes, -70, 70)
+    positions = {**organ_pos, **clone_pos}
+
+    max_edge_abundance = float(chord_edges["abundance"].max()) if not chord_edges.empty else 1.0
+    max_edge_abundance = max(max_edge_abundance, 1.0)
+    clone_degree_map = clone_summary.set_index("clonotype")["organ_cell_count"].to_dict()
+
+    fig = go.Figure()
+    for _, row in chord_edges.sort_values("abundance").iterrows():
+        source = str(row["organ_cell"])
+        target = str(row["clonotype"])
+        if source not in positions or target not in positions:
+            continue
+        x0, y0 = positions[source]
+        x1, y1 = positions[target]
+        points = 24
+        x_vals: List[float] = []
+        y_vals: List[float] = []
+        for step in range(points + 1):
+            t = step / points
+            one_minus_t = 1 - t
+            x = (one_minus_t * one_minus_t * x0) + (2 * one_minus_t * t * 0.0) + (t * t * x1)
+            y = (one_minus_t * one_minus_t * y0) + (2 * one_minus_t * t * 0.0) + (t * t * y1)
+            x_vals.append(x)
+            y_vals.append(y)
+        width = 1 + (5 * float(row["abundance"]) / max_edge_abundance)
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="lines",
+                line={"color": "rgba(31, 119, 180, 0.35)", "width": width},
+                hovertemplate=(
+                    f"Organ/Cell: {source}<br>"
+                    f"Clonotype: {target}<br>"
+                    f"Abundance: {float(row['abundance']):.2f}<br>"
+                    f"Groups for clone: {int(clone_degree_map.get(target, 0))}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[organ_pos[label][0] for label in organ_nodes],
+            y=[organ_pos[label][1] for label in organ_nodes],
+            mode="markers+text",
+            text=organ_nodes,
+            textposition="middle left",
+            marker={"size": 14, "color": "#1f77b4"},
+            name="Organ/Cell",
+            hovertemplate="%{text}<extra>Organ/Cell</extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[clone_pos[label][0] for label in clone_nodes],
+            y=[clone_pos[label][1] for label in clone_nodes],
+            mode="markers+text",
+            text=clone_nodes,
+            textposition="middle right",
+            marker={"size": 11, "color": "#ff7f0e"},
+            name="Clonotype",
+            hovertemplate="%{text}<extra>Clonotype</extra>",
+        )
+    )
+
+    fig.update_layout(
+        height=760,
+        margin={"l": 40, "r": 40, "t": 40, "b": 40},
+        xaxis={"visible": False, "range": [-1.3, 1.3]},
+        yaxis={"visible": False, "range": [-1.2, 1.2]},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        hovermode="closest",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+    )
+    return fig, chord_edges
+
+
 st.title("TCR Abundance Explorer")
 
 with st.sidebar:
@@ -395,20 +549,22 @@ The app will help you explore clonotypes per mouse, organ and cell type and visu
 
 if use_example:
     st.info(
-        "Using the bundled example dataset (output.csv). "
+        f"Using the bundled example dataset ({EXAMPLE_DATASET_FILENAME}). "
         "Uncheck 'Use example dataset' to upload a new file."
     )
-    uploaded_file = "test.abundance.1.csv"
-    #uploaded_file = "output.csv"
+    uploaded_file = "__bundled_example__"
 
-if uploaded_file is None:
+if not use_example and uploaded_file is None:
     st.info("Upload a CSV file to begin.")
     if get_script_run_ctx() is None:
         raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
     st.stop()
 
 try:
-    df = pd.read_csv(uploaded_file)
+    if use_example:
+        df = load_example_dataframe()
+    else:
+        df = pd.read_csv(uploaded_file)
 except Exception as exc:
     st.error(f"Unable to read file: {exc}")
     st.stop()
@@ -635,7 +791,7 @@ with network_cols[1]:
         help="Adjust the font size for organ/cell and clonotype node labels.",
     )
 with network_cols[2]:
-    min_edge_abundance = st.slider(
+    min_edge_abundance = st.number_input(
         "Minimum organ/cell-clonotype edge abundance",
         min_value=0.0,
         max_value=float(filtered["abundance"].max()),
@@ -672,6 +828,41 @@ if network_html:
 else:
     st.warning(
         "No network edges remain after the current filters and minimum edge threshold."
+    )
+
+st.subheader("Entity-Level Chord View (Clone to Organ/Cell)")
+st.caption(
+    "Clones can connect to more than two organ/cell groups. "
+    "Use filters to focus on shared clones and keep the plot readable."
+)
+chord_cols = st.columns(2)
+with chord_cols[0]:
+    chord_only_shared = st.checkbox(
+        "Only clones shared by >=2 organ/cell groups",
+        value=True,
+    )
+with chord_cols[1]:
+    available_chord_clones = int(edge_df["clonotype"].nunique()) if not edge_df.empty else 1
+    chord_max_clonotypes = st.slider(
+        "Max clonotypes in chord view",
+        min_value=1,
+        max_value=max(1, available_chord_clones),
+        value=min(20, max(1, available_chord_clones)),
+        step=1,
+    )
+chord_fig, chord_edges = build_entity_chord_figure(
+    edge_df=edge_df,
+    only_shared_clones=chord_only_shared,
+    max_clonotypes=chord_max_clonotypes,
+)
+if chord_fig is None or chord_edges.empty:
+    st.info("No clonotypes match the chord filters.")
+else:
+    st.plotly_chart(chord_fig, width="stretch")
+    st.caption(
+        f"Chord edges shown: {len(chord_edges)} "
+        f"across {chord_edges['clonotype'].nunique()} clonotypes and "
+        f"{chord_edges['organ_cell'].nunique()} organ/cell groups."
     )
 
 st.markdown("**Organ/cell pairs with most shared clonotypes**")

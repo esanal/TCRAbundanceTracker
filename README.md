@@ -5,9 +5,9 @@ An interactive Streamlit app for exploring TCR clonotype abundance across mice, 
 ## Features
 - Filter by mouse, organ, cell type, and chain.
 - Heatmap of top clonotype abundance by organ/cell combinations.
-- Sample-level stacked bar chart (when a `sample` column is provided).
 - Draggable occurrence network linking clonotypes to organ/cell combinations.
 - Download filtered datasets for downstream analysis.
+- Organ|Cell group summaries. Organ|Cell based clonotype occurance of all individuals can be summarized.
 
 ## Expected columns
 The app looks for these columns (case-insensitive):

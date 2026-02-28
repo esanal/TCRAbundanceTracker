@@ -31,7 +31,7 @@ DEFAULT_EDGE_WIDTH_SCALE = 0.2
 DEFAULT_GRAVITY = -2200
 DEFAULT_SPRING_LENGTH = 180
 PSEUDO_ZERO = 1e-4
-EXAMPLE_DATASET_FILENAME = "output.csv"
+EXAMPLE_DATASET_FILENAME = "test.abundance.1.csv"
 FALLBACK_EXAMPLE_CSV = """mouse,organ,cell_type,chain,clonotype,abundance,sample
 MouseA,Spleen,CD4,TCRB,CLN001,120,S1
 MouseA,Spleen,CD8,TCRB,CLN002,80,S1

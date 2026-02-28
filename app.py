@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 from pyvis.network import Network
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 import math
+import numpy as np
 
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
 
@@ -29,6 +30,7 @@ SELECTED_ORGAN_CELL_COLOR = "#d62728"
 DEFAULT_EDGE_WIDTH_SCALE = 0.2
 DEFAULT_GRAVITY = -2200
 DEFAULT_SPRING_LENGTH = 180
+PSEUDO_ZERO = 1e-4
 EXAMPLE_DATASET_FILENAME = "output.csv"
 FALLBACK_EXAMPLE_CSV = """mouse,organ,cell_type,chain,clonotype,abundance,sample
 MouseA,Spleen,CD4,TCRB,CLN001,120,S1
@@ -533,421 +535,716 @@ def build_entity_chord_figure(
     return fig, chord_edges
 
 
-st.title("TCR Abundance Explorer")
-
-with st.sidebar:
-    st.header("Data")
-    use_example = st.checkbox("Use example dataset", value=True)
-    uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
-
-st.markdown(
-    """
-Upload a CSV file of clonotype sequences with mouse, organ, cell type, chain, and abundance.
-The app will help you explore clonotypes per mouse, organ and cell type and visualize abundance patterns.
-"""
-)
-
-if use_example:
-    st.info(
-        f"Using the bundled example dataset ({EXAMPLE_DATASET_FILENAME}). "
-        "Uncheck 'Use example dataset' to upload a new file."
+def prepare_summary_line_data(
+    df: pd.DataFrame, selected_clonotypes: List[str], lineage: str
+) -> Tuple[pd.DataFrame, List[str], List[str]]:
+    all_mice = sorted(df["mouse"].unique())
+    df_lineage = (
+        df.assign(cd_group=df["cell_type"].apply(classify_cd4_cd8))
+        .query("cd_group == @lineage")
+        .copy()
     )
-    uploaded_file = "__bundled_example__"
+    lineage_totals = (
+        df_lineage.groupby("mouse", as_index=False)["abundance"]
+        .sum()
+        .rename(columns={"abundance": "lineage_abundance"})
+    )
+    lineage_totals = (
+        pd.DataFrame({"mouse": all_mice})
+        .merge(lineage_totals, on="mouse", how="left")
+        .fillna({"lineage_abundance": 0.0})
+    )
+    organ_cells = sorted(df_lineage["organ_cell"].unique())
+    combos = (
+        pd.MultiIndex.from_product(
+            [all_mice, organ_cells, selected_clonotypes],
+            names=["mouse", "organ_cell", "clonotype"],
+        )
+        .to_frame(index=False)
+    )
+    aggregated = (
+        df_lineage[df_lineage["clonotype"].isin(selected_clonotypes)]
+        .groupby(["mouse", "organ_cell", "clonotype"], as_index=False)["abundance"]
+        .sum()
+    )
+    lineage_plot = combos.merge(aggregated, on=["mouse", "organ_cell", "clonotype"], how="left")
+    lineage_plot["abundance"] = lineage_plot["abundance"].fillna(0.0)
+    lineage_plot = lineage_plot.merge(lineage_totals, on="mouse", how="left")
+    lineage_plot["lineage_abundance"] = lineage_plot["lineage_abundance"].fillna(0.0)
+    lineage_plot["pool_pct"] = (
+        lineage_plot["abundance"]
+        / lineage_plot["lineage_abundance"].replace(0, np.nan)
+        * 100.0
+    ).fillna(0.0)
+    return lineage_plot, all_mice, organ_cells
 
-if not use_example and uploaded_file is None:
-    st.info("Upload a CSV file to begin.")
-    if get_script_run_ctx() is None:
-        raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
-    st.stop()
 
-try:
+def load_dataset_from_sidebar() -> pd.DataFrame:
+    with st.sidebar:
+        st.header("Data")
+        use_example = st.checkbox("Use example dataset", value=True)
+        uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
+
+    data_source = "__bundled_example__" if use_example else uploaded_file
+
     if use_example:
-        df = load_example_dataframe()
-    else:
-        df = pd.read_csv(uploaded_file)
-except Exception as exc:
-    st.error(f"Unable to read file: {exc}")
-    st.stop()
-
-df, mapping = normalize_columns(df)
-valid, missing = validate_columns(df)
-if not valid:
-    st.error(
-        "Missing required columns: " + ", ".join(missing)
-    )
-    st.write("Detected columns:", list(df.columns))
-    st.stop()
-
-
-for col in ["mouse", "organ", "cell_type", "chain", "clonotype"]:
-    df[col] = df[col].astype(str)
-df["abundance"] = pd.to_numeric(df["abundance"], errors="coerce").fillna(0.0)
-
-with st.sidebar:
-    st.header("Filters")
-    mouse_selected = st.selectbox("Mouse", sorted(df["mouse"].unique()))
-    chain_selected = st.selectbox(
-        "Chain", sorted(df["chain"].unique()))
-
-    organ_selected = st.multiselect(
-        "Organ", sorted(df["organ"].unique()), default=sorted(df["organ"].unique())
-    )
-    cell_selected = st.multiselect(
-        "Cell type",
-        sorted(df["cell_type"].unique()),
-        default=sorted(df["cell_type"].unique()),
-    )
-
-filtered = df[
-    (df["mouse"] == mouse_selected)
-    & (df["organ"].isin(organ_selected))
-    & (df["cell_type"].isin(cell_selected))
-    & (df["chain"] == chain_selected)
-].copy()
-
-if filtered.empty:
-    st.warning("No data match the selected filters.")
-    st.stop()
-
-filtered["organ_cell"] = filtered["organ"] + " | " + filtered["cell_type"]
-
-summary_cols = st.columns(5)
-summary_cols[0].metric("Mouse/Individual", mouse_selected)
-summary_cols[1].metric("Chain", chain_selected)
-summary_cols[2].metric("Clonotypes", filtered["clonotype"].nunique())
-summary_cols[3].metric("Organs", filtered["organ"].nunique())
-summary_cols[4].metric("Cell types", filtered["cell_type"].nunique())
-
-st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
-organ_cell_options = sorted(filtered["organ_cell"].unique())
-top_n_scope = st.selectbox(
-    "Rank top clonotypes by organ/cell combination",
-    organ_cell_options,
-)
-max_clonotypes = (
-    filtered[filtered["organ_cell"] == top_n_scope]["clonotype"].nunique()
-)
-max_clonotypes = max(1, max_clonotypes)
-top_n = st.slider(
-    "Select number of largest clonotypes to display",
-    min_value=1,
-    max_value=max_clonotypes,
-    value=min(10, max_clonotypes),
-    step=1,
-)
-clono_totals = (
-    filtered[filtered["organ_cell"] == top_n_scope]
-    .groupby("clonotype", as_index=False)["abundance"]
-    .sum()
-    .sort_values("abundance", ascending=False)
-)
-selected_clonotypes = clono_totals.head(top_n)["clonotype"].tolist()
-heatmap_df = (
-    filtered[filtered["clonotype"].isin(selected_clonotypes)]
-    .groupby(["clonotype", "organ_cell"], as_index=False)["abundance"]
-    .sum()
-)
-heatmap_pivot = heatmap_df.pivot(
-    index="clonotype", columns="organ_cell", values="abundance"
-).fillna(0)
-heatmap_fig = px.imshow(
-    heatmap_pivot,
-    labels=dict(x="Organ/Cell", y="Clonotype", color="Abundance"),
-    aspect="auto",
-    color_continuous_scale="viridis",
-)
-heatmap_fig.update_layout(height=500)
-heatmap_x_categories = heatmap_pivot.columns.tolist()
-heatmap_fig.update_xaxes(
-    tickmode="array",
-    tickvals=heatmap_x_categories,
-    ticktext=build_highlighted_tick_labels(
-        heatmap_x_categories,
-        top_n_scope,
-    ),
-)
-
-st.plotly_chart(heatmap_fig, width="stretch")
-
-pseudo_zero = 1e-5
-st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
-st.caption(
-    "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
-    "Y-axis shows percent of the lineage pool size; toggle the log option if needed."
-)
-log_axis = st.checkbox(
-    "Log10 scale",
-    value=True,
-    help="Display % pool size on log10 axis and treat zero values as pseudo 10⁻⁵.",
-)
-lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
-lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
-for lineage in ["CD4", "CD8"]:
-    lineage_df = lineage_filtered[lineage_filtered["cd_group"] == lineage].copy()
-    st.markdown(f"**{lineage} clonotype abundance across organ/cell**")
-    if lineage_df.empty:
-        st.info(f"No {lineage} cells found for current filters.")
-        continue
-    lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
-    # 1. Pivot to create the grid automatically (clonotypes x organ_cells)
-    # This handles the "missing" combinations by filling them with 0 immediately
-    lineage_pivot = lineage_df.pivot_table(
-        index="clonotype", 
-        columns="organ_cell", 
-        values="abundance", 
-        aggfunc="sum", 
-        fill_value=0
-    ).reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0)
-    # 2. Flatten back to "long" format for Plotly
-    organ_cell_line = lineage_pivot.reset_index().melt(
-        id_vars="clonotype", 
-        value_name="abundance"
-    )
-    lineage_pool_size = float(lineage_df["abundance"].sum())
-    if lineage_pool_size > 0:
-        organ_cell_line["pool_pct"] = (
-            organ_cell_line["abundance"] / lineage_pool_size * 100.0
+        st.info(
+            f"Using the bundled example dataset ({EXAMPLE_DATASET_FILENAME}). "
+            "Uncheck 'Use example dataset' to upload a new file."
         )
-    else:
-        organ_cell_line["pool_pct"] = 0.0
-    organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct"]
-    if log_axis:
-        organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct_plot"].where(
-            organ_cell_line["pool_pct_plot"] > 0, pseudo_zero
-        )
-    line_fig = px.line(
-        organ_cell_line,
-        x="organ_cell",
-        y="pool_pct_plot",
-        color="clonotype",
-        markers=True,
-        labels={"organ_cell": "Organ/Cell", "pool_pct_plot": "% Pool Size"},
+
+    if not use_example and data_source is None:
+        st.info("Upload a CSV file to begin.")
+        if get_script_run_ctx() is None:
+            raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
+        st.stop()
+
+    try:
+        df = load_example_dataframe() if use_example else pd.read_csv(data_source)
+    except Exception as exc:
+        st.error(f"Unable to read file: {exc}")
+        st.stop()
+
+    df, _ = normalize_columns(df)
+    valid, missing = validate_columns(df)
+    if not valid:
+        st.error("Missing required columns: " + ", ".join(missing))
+        st.write("Detected columns:", list(df.columns))
+        st.stop()
+
+    for col in ["mouse", "organ", "cell_type", "chain", "clonotype"]:
+        df[col] = df[col].astype(str)
+    df["abundance"] = pd.to_numeric(df["abundance"], errors="coerce").fillna(0.0)
+    df["organ_cell"] = df["organ"] + " | " + df["cell_type"]
+
+    return df
+
+
+def run_per_individual_page(df: pd.DataFrame):
+    st.title("TCR Abundance Explorer")
+    st.subheader("Per individual")
+
+    st.markdown(
+        """
+    Upload a CSV file of clonotype sequences with mouse, organ, cell type, chain, and abundance.
+    The app will help you explore clonotypes per mouse, organ and cell type and visualize abundance patterns.
+    """
     )
-    yaxis_config = {
-        "title": "% Pool Size",
-        "type": "log" if log_axis else "linear",
-    }
-    if log_axis:
-        tick_exponents = list(range(-5, 3))
-        yaxis_config.update(
-            {
-                "tickvals": [10 ** exp for exp in tick_exponents],
-                "ticktext": [
-                    "0" if exp == -5 else f"10{superscript(exp)}"
-                    for exp in tick_exponents
-                ],
-                "range": [tick_exponents[0], tick_exponents[-1]],
-            }
+
+
+    with st.sidebar:
+        st.header("Filters")
+        mouse_selected = st.selectbox("Mouse", sorted(df["mouse"].unique()))
+        chain_selected = st.selectbox(
+            "Chain", sorted(df["chain"].unique()))
+
+        organ_selected = st.multiselect(
+            "Organ", sorted(df["organ"].unique()), default=sorted(df["organ"].unique())
         )
-    else:
-        yaxis_config.setdefault("range", [0, 100])
-    line_fig.update_layout(height=420, yaxis=yaxis_config)
-    if log_axis:
-        line_fig.add_hline(
-            y=pseudo_zero,
-            line_dash="dash",
-            line_color="#888888",
-            opacity=0.6,
+        cell_selected = st.multiselect(
+            "Cell type",
+            sorted(df["cell_type"].unique()),
+            default=sorted(df["cell_type"].unique()),
         )
-    line_fig.update_xaxes(
+
+    filtered = df[
+        (df["mouse"] == mouse_selected)
+        & (df["organ"].isin(organ_selected))
+        & (df["cell_type"].isin(cell_selected))
+        & (df["chain"] == chain_selected)
+    ].copy()
+
+    if filtered.empty:
+        st.warning("No data match the selected filters.")
+        st.stop()
+
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Mouse/Individual", mouse_selected)
+    summary_cols[1].metric("Chain", chain_selected)
+    summary_cols[2].metric("Clonotypes", filtered["clonotype"].nunique())
+    summary_cols[3].metric("Organs", filtered["organ"].nunique())
+    summary_cols[4].metric("Cell types", filtered["cell_type"].nunique())
+
+    st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
+
+    select_cols = st.columns(2)
+    organ_cell_options = sorted(filtered["organ_cell"].unique())
+    with select_cols[0]:
+        top_n_scope = st.selectbox(
+            "Rank top clonotypes by organ/cell combination",
+            organ_cell_options,
+        )
+    max_clonotypes = (
+        filtered[filtered["organ_cell"] == top_n_scope]["clonotype"].nunique()
+    )
+    max_clonotypes = max(1, max_clonotypes)
+    with select_cols[1]:
+        top_n = st.number_input(
+            "Select number of largest clonotypes to display",
+            min_value=1,
+            max_value=max_clonotypes,
+            value=min(10, max_clonotypes),
+            step=1,
+        )
+    clono_totals = (
+        filtered[filtered["organ_cell"] == top_n_scope]
+        .groupby("clonotype", as_index=False)["abundance"]
+        .sum()
+        .sort_values("abundance", ascending=False)
+    )
+    selected_clonotypes = clono_totals.head(top_n)["clonotype"].tolist()
+    heatmap_df = (
+        filtered[filtered["clonotype"].isin(selected_clonotypes)]
+        .groupby(["clonotype", "organ_cell"], as_index=False)["abundance"]
+        .sum()
+    )
+    heatmap_pivot = heatmap_df.pivot(
+        index="clonotype", columns="organ_cell", values="abundance"
+    ).fillna(0)
+    heatmap_fig = px.imshow(
+        heatmap_pivot,
+        labels=dict(x="Organ/Cell", y="Clonotype", color="Abundance"),
+        aspect="auto",
+        color_continuous_scale="viridis",
+    )
+    heatmap_fig.update_layout(height=500)
+    heatmap_x_categories = heatmap_pivot.columns.tolist()
+    heatmap_fig.update_xaxes(
         tickmode="array",
-        tickvals=lineage_organ_cells,
+        tickvals=heatmap_x_categories,
         ticktext=build_highlighted_tick_labels(
-            lineage_organ_cells,
+            heatmap_x_categories,
             top_n_scope,
         ),
     )
-    st.plotly_chart(line_fig, width="stretch")
 
+    st.plotly_chart(heatmap_fig, width="stretch")
 
-st.subheader("Hierarchical Organ/Cell-Clonotype Network")
-st.caption(
-    "Organ/cell nodes are on the left and clonotypes on the right. "
-    "Organ/cell node size reflects total clone-sharing with other organ/cell nodes."
-)
-network_cols = st.columns(3)
-with network_cols[0]:
-    physics_mode = st.selectbox(
-        "Network physics preset",
-        [
-            "Balanced (default)",
-            "Weak repulsion (long links)",
-            "Compact clusters (tight)",
-            "Force Atlas 2 (attractive)",
-            "No physics",
-        ],
-        index=0,
-        help="Switch between physics behaviors; presets adjust repulsion/spring behavior.",
-    )
-with network_cols[1]:
-    st.caption(f"Network clonotypes: using current top selection ({len(selected_clonotypes)}).")
-    show_clonotype_labels = st.checkbox("Show clonotype labels", value=False)
-    node_font_size = st.slider(
-        "Node label font size",
-        min_value=12,
-        max_value=30,
-        value=18,
-        step=1,
-        help="Adjust the font size for organ/cell and clonotype node labels.",
-    )
-with network_cols[2]:
-    min_edge_abundance = st.number_input(
-        "Minimum organ/cell-clonotype edge abundance",
-        min_value=0.0,
-        max_value=float(filtered["abundance"].max()),
-        value=0.0,
-        step=1.0,
-        help="Filter out low-abundance organ/cell/clonotype edges.",
-    )
-edge_width_scale = DEFAULT_EDGE_WIDTH_SCALE
-gravity = DEFAULT_GRAVITY
-spring_length = DEFAULT_SPRING_LENGTH
-
-edge_df = build_organ_cell_clonotype_edges(
-    filtered,
-    selected_clonotypes,
-    min_edge_abundance=min_edge_abundance,
-)
-pair_df, organ_cell_summary, shared_matrix = calculate_organ_cell_sharing(edge_df)
-selected_metric_node = st.session_state.get("network_metrics_selected_node")
-
-network_html = build_organ_cell_clonotype_network_html(
-    edge_df=edge_df,
-    organ_cell_summary=organ_cell_summary,
-    selected_organ_cell=top_n_scope,
-    selected_node=selected_metric_node,
-    show_clonotype_labels=show_clonotype_labels,
-    gravity=gravity,
-    spring_length=spring_length,
-    edge_width_scale=edge_width_scale,
-    physics_mode=physics_mode,
-    node_font_size=node_font_size,
-)
-if network_html:
-    components.html(network_html, height=580, scrolling=True)
-else:
-    st.warning(
-        "No network edges remain after the current filters and minimum edge threshold."
-    )
-
-st.subheader("Entity-Level Chord View (Clone to Organ/Cell)")
-st.caption(
-    "Clones can connect to more than two organ/cell groups. "
-    "Use filters to focus on shared clones and keep the plot readable."
-)
-chord_cols = st.columns(2)
-with chord_cols[0]:
-    chord_only_shared = st.checkbox(
-        "Only clones shared by >=2 organ/cell groups",
-        value=True,
-    )
-with chord_cols[1]:
-    available_chord_clones = int(edge_df["clonotype"].nunique()) if not edge_df.empty else 1
-    chord_max_clonotypes = st.slider(
-        "Max clonotypes in chord view",
-        min_value=1,
-        max_value=max(1, available_chord_clones),
-        value=min(20, max(1, available_chord_clones)),
-        step=1,
-    )
-chord_fig, chord_edges = build_entity_chord_figure(
-    edge_df=edge_df,
-    only_shared_clones=chord_only_shared,
-    max_clonotypes=chord_max_clonotypes,
-)
-if chord_fig is None or chord_edges.empty:
-    st.info("No clonotypes match the chord filters.")
-else:
-    st.plotly_chart(chord_fig, width="stretch")
+    pseudo_zero = 1e-4
+    st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
     st.caption(
-        f"Chord edges shown: {len(chord_edges)} "
-        f"across {chord_edges['clonotype'].nunique()} clonotypes and "
-        f"{chord_edges['organ_cell'].nunique()} organ/cell groups."
+        "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
+        "Y-axis shows percent of the lineage pool size; toggle the log option if needed."
+    )
+    log_axis = st.checkbox(
+        "Log10 scale",
+        value=True,
+        help="Display % pool size on log10 axis and treat zero values as pseudo 10⁻⁴.",
+    )
+    lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
+    lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
+    for lineage in ["CD4", "CD8"]:
+        lineage_df = lineage_filtered[lineage_filtered["cd_group"] == lineage].copy()
+        st.markdown(f"**{lineage} clonotype abundance across organ/cell**")
+        if lineage_df.empty:
+            st.info(f"No {lineage} cells found for current filters.")
+            continue
+        lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
+        # 1. Pivot to create the grid automatically (clonotypes x organ_cells)
+        # This handles the "missing" combinations by filling them with 0 immediately
+        lineage_pivot = lineage_df.pivot_table(
+            index="clonotype", 
+            columns="organ_cell", 
+            values="abundance", 
+            aggfunc="sum", 
+            fill_value=0
+        ).reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0)
+        # 2. Flatten back to "long" format for Plotly
+        organ_cell_line = lineage_pivot.reset_index().melt(
+            id_vars="clonotype", 
+            value_name="abundance"
+        )
+        lineage_pool_size = float(lineage_df["abundance"].sum())
+        if lineage_pool_size > 0:
+            organ_cell_line["pool_pct"] = (
+                organ_cell_line["abundance"] / lineage_pool_size * 100.0
+            )
+        else:
+            organ_cell_line["pool_pct"] = 0.0
+        organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct"]
+        if log_axis:
+            organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct_plot"].where(
+                organ_cell_line["pool_pct_plot"] > 0, pseudo_zero
+            )
+        line_fig = px.line(
+            organ_cell_line,
+            x="organ_cell",
+            y="pool_pct_plot",
+            color="clonotype",
+            markers=True,
+            labels={"organ_cell": "Organ/Cell", "pool_pct_plot": "% Pool Size"},
+        )
+        yaxis_config = {
+            "title": "% Pool Size",
+            "type": "log" if log_axis else "linear",
+        }
+        if log_axis:
+            tick_exponents = list(range(-5, 3))
+            yaxis_config.update(
+                {
+                    "tickvals": [10 ** exp for exp in tick_exponents],
+                    "ticktext": [
+                        "0" if exp == -5 else f"10{superscript(exp)}"
+                        for exp in tick_exponents
+                    ],
+                    "range": [tick_exponents[0], tick_exponents[-1]],
+                }
+            )
+        else:
+            yaxis_config.setdefault("range", [0, 100])
+        line_fig.update_layout(height=420, yaxis=yaxis_config)
+        if log_axis:
+            line_fig.add_hline(
+                y=pseudo_zero,
+                line_dash="dash",
+                line_color="#888888",
+                opacity=0.6,
+            )
+        line_fig.update_xaxes(
+            tickmode="array",
+            tickvals=lineage_organ_cells,
+            ticktext=build_highlighted_tick_labels(
+                lineage_organ_cells,
+                top_n_scope,
+            ),
+        )
+        st.plotly_chart(line_fig, width="stretch")
+
+
+    st.subheader("Hierarchical Organ/Cell-Clonotype Network")
+    st.caption(
+        "Organ/cell nodes are on the left and clonotypes on the right. "
+        "Organ/cell node size reflects total clone-sharing with other organ/cell nodes."
+    )
+    network_cols = st.columns(3)
+    with network_cols[0]:
+        physics_mode = st.selectbox(
+            "Network physics preset",
+            [
+                "Balanced (default)",
+                "Weak repulsion (long links)",
+                "Compact clusters (tight)",
+                "Force Atlas 2 (attractive)",
+                "No physics",
+            ],
+            index=0,
+            help="Switch between physics behaviors; presets adjust repulsion/spring behavior.",
+        )
+    with network_cols[1]:
+        st.caption(f"Network clonotypes: using current top selection ({len(selected_clonotypes)}).")
+        show_clonotype_labels = st.checkbox("Show clonotype labels", value=False)
+        node_font_size = st.slider(
+            "Node label font size",
+            min_value=12,
+            max_value=30,
+            value=18,
+            step=1,
+            help="Adjust the font size for organ/cell and clonotype node labels.",
+        )
+    with network_cols[2]:
+        min_edge_abundance = st.number_input(
+            "Minimum organ/cell-clonotype edge abundance",
+            min_value=0.0,
+            max_value=float(filtered["abundance"].max()),
+            value=0.0,
+            step=1.0,
+            help="Filter out low-abundance organ/cell/clonotype edges.",
+        )
+    edge_width_scale = DEFAULT_EDGE_WIDTH_SCALE
+    gravity = DEFAULT_GRAVITY
+    spring_length = DEFAULT_SPRING_LENGTH
+
+    edge_df = build_organ_cell_clonotype_edges(
+        filtered,
+        selected_clonotypes,
+        min_edge_abundance=min_edge_abundance,
+    )
+    pair_df, organ_cell_summary, shared_matrix = calculate_organ_cell_sharing(edge_df)
+    selected_metric_node = st.session_state.get("network_metrics_selected_node")
+
+    network_html = build_organ_cell_clonotype_network_html(
+        edge_df=edge_df,
+        organ_cell_summary=organ_cell_summary,
+        selected_organ_cell=top_n_scope,
+        selected_node=selected_metric_node,
+        show_clonotype_labels=show_clonotype_labels,
+        gravity=gravity,
+        spring_length=spring_length,
+        edge_width_scale=edge_width_scale,
+        physics_mode=physics_mode,
+        node_font_size=node_font_size,
+    )
+    if network_html:
+        components.html(network_html, height=580, scrolling=True)
+    else:
+        st.warning(
+            "No network edges remain after the current filters and minimum edge threshold."
+        )
+
+    st.subheader("Entity-Level Chord View (Clone to Organ/Cell)")
+    st.caption(
+        "Clones can connect to more than two organ/cell groups. "
+        "Use filters to focus on shared clones and keep the plot readable."
+    )
+    chord_cols = st.columns(2)
+    with chord_cols[0]:
+        chord_only_shared = st.checkbox(
+            "Only clones shared by >=2 organ/cell groups",
+            value=True,
+        )
+    with chord_cols[1]:
+        available_chord_clones = int(edge_df["clonotype"].nunique()) if not edge_df.empty else 1
+        chord_max_clonotypes = st.slider(
+            "Max clonotypes in chord view",
+            min_value=1,
+            max_value=max(1, available_chord_clones),
+            value=min(20, max(1, available_chord_clones)),
+            step=1,
+        )
+    chord_fig, chord_edges = build_entity_chord_figure(
+        edge_df=edge_df,
+        only_shared_clones=chord_only_shared,
+        max_clonotypes=chord_max_clonotypes,
+    )
+    if chord_fig is None or chord_edges.empty:
+        st.info("No clonotypes match the chord filters.")
+    else:
+        st.plotly_chart(chord_fig, width="stretch")
+        st.caption(
+            f"Chord edges shown: {len(chord_edges)} "
+            f"across {chord_edges['clonotype'].nunique()} clonotypes and "
+            f"{chord_edges['organ_cell'].nunique()} organ/cell groups."
+        )
+
+    st.markdown("**Organ/cell pairs with most shared clonotypes**")
+    if pair_df.empty:
+        st.info("No organ/cell pairs share clonotypes at the current threshold.")
+    else:
+        st.dataframe(pair_df.head(20), width="stretch")
+        shared_heatmap = px.imshow(
+            shared_matrix,
+            labels={"x": "Organ/Cell", "y": "Organ/Cell", "color": "Shared clonotypes"},
+            color_continuous_scale="Blues",
+            aspect="auto",
+        )
+        shared_heatmap.update_layout(height=420)
+        st.plotly_chart(shared_heatmap, width="stretch")
+
+    st.subheader("Network Metrics")
+    metrics_df = calculate_network_metrics(
+        edge_df=edge_df,
+        organ_cell_summary=organ_cell_summary,
+    )
+    if metrics_df.empty:
+        st.info("No network metrics available for the current edge threshold.")
+    else:
+        metric_col1, metric_col2 = st.columns(2)
+        with metric_col1:
+            top_pair_text = (
+                f"{pair_df.iloc[0]['organ_cell_a']} <-> {pair_df.iloc[0]['organ_cell_b']}"
+                if not pair_df.empty
+                else "N/A"
+            )
+            top_pair_value = (
+                f"{pair_df.iloc[0]['shared_clonotypes']:.0f}"
+                if not pair_df.empty
+                else "0"
+            )
+            st.metric("Top shared organ/cell pair", top_pair_text, top_pair_value)
+        with metric_col2:
+            top_node = (
+                organ_cell_summary.iloc[0]
+                if not organ_cell_summary.empty
+                else pd.Series({"organ_cell": "N/A", "total_shared_clonotypes": 0.0})
+            )
+            st.metric(
+                "Most connected organ/cell node",
+                str(top_node["organ_cell"]),
+                f"{float(top_node['total_shared_clonotypes']):.0f} shared clones",
+            )
+        metric_actions = st.columns([3, 1])
+        with metric_actions[0]:
+            if selected_metric_node:
+                st.caption(f"Highlighted node in network: {selected_metric_node}")
+        with metric_actions[1]:
+            if st.button("Clear node highlight", use_container_width=True):
+                st.session_state["network_metrics_selected_node"] = None
+                st.rerun()
+
+        metrics_display_df = metrics_df.copy()
+        metrics_display_df["weighted_degree"] = metrics_display_df["weighted_degree"].round(2)
+        metrics_display_df["betweenness_centrality"] = metrics_display_df[
+            "betweenness_centrality"
+        ].round(4)
+        metrics_display_df["total_shared_clonotypes"] = metrics_display_df[
+            "total_shared_clonotypes"
+        ].round(0)
+        metric_selection_event = st.dataframe(
+            metrics_display_df,
+            width="stretch",
+            key="network_metrics_table",
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+        selected_rows = metric_selection_event.selection.get("rows", [])
+        if selected_rows:
+            selected_row_idx = int(selected_rows[0])
+            clicked_node = str(metrics_display_df.iloc[selected_row_idx]["node"])
+            if clicked_node != selected_metric_node:
+                st.session_state["network_metrics_selected_node"] = clicked_node
+                st.rerun()
+
+    st.subheader("Filtered Data")
+    st.dataframe(filtered, width="stretch")
+
+    csv_buffer = io.StringIO()
+    filtered.to_csv(csv_buffer, index=False)
+    st.download_button(
+        "Download filtered data", csv_buffer.getvalue(), file_name="filtered_clonotypes.csv"
     )
 
-st.markdown("**Organ/cell pairs with most shared clonotypes**")
-if pair_df.empty:
-    st.info("No organ/cell pairs share clonotypes at the current threshold.")
-else:
-    st.dataframe(pair_df.head(20), width="stretch")
-    shared_heatmap = px.imshow(
-        shared_matrix,
-        labels={"x": "Organ/Cell", "y": "Organ/Cell", "color": "Shared clonotypes"},
-        color_continuous_scale="Blues",
-        aspect="auto",
-    )
-    shared_heatmap.update_layout(height=420)
-    st.plotly_chart(shared_heatmap, width="stretch")
 
-st.subheader("Network Metrics")
-metrics_df = calculate_network_metrics(
-    edge_df=edge_df,
-    organ_cell_summary=organ_cell_summary,
-)
-if metrics_df.empty:
-    st.info("No network metrics available for the current edge threshold.")
-else:
-    metric_col1, metric_col2 = st.columns(2)
-    with metric_col1:
-        top_pair_text = (
-            f"{pair_df.iloc[0]['organ_cell_a']} <-> {pair_df.iloc[0]['organ_cell_b']}"
-            if not pair_df.empty
-            else "N/A"
-        )
-        top_pair_value = (
-            f"{pair_df.iloc[0]['shared_clonotypes']:.0f}"
-            if not pair_df.empty
-            else "0"
-        )
-        st.metric("Top shared organ/cell pair", top_pair_text, top_pair_value)
-    with metric_col2:
-        top_node = (
-            organ_cell_summary.iloc[0]
-            if not organ_cell_summary.empty
-            else pd.Series({"organ_cell": "N/A", "total_shared_clonotypes": 0.0})
-        )
-        st.metric(
-            "Most connected organ/cell node",
-            str(top_node["organ_cell"]),
-            f"{float(top_node['total_shared_clonotypes']):.0f} shared clones",
-        )
-    metric_actions = st.columns([3, 1])
-    with metric_actions[0]:
-        if selected_metric_node:
-            st.caption(f"Highlighted node in network: {selected_metric_node}")
-    with metric_actions[1]:
-        if st.button("Clear node highlight", use_container_width=True):
-            st.session_state["network_metrics_selected_node"] = None
-            st.rerun()
-
-    metrics_display_df = metrics_df.copy()
-    metrics_display_df["weighted_degree"] = metrics_display_df["weighted_degree"].round(2)
-    metrics_display_df["betweenness_centrality"] = metrics_display_df[
-        "betweenness_centrality"
-    ].round(4)
-    metrics_display_df["total_shared_clonotypes"] = metrics_display_df[
-        "total_shared_clonotypes"
-    ].round(0)
-    metric_selection_event = st.dataframe(
-        metrics_display_df,
-        width="stretch",
-        key="network_metrics_table",
-        on_select="rerun",
-        selection_mode="single-row",
+#########################################
+#### Summary page of all individuals ####
+#########################################
+def run_summary_all_page(df: pd.DataFrame):
+    st.title("TCR Abundance Explorer")
+    st.subheader("Summary all individuals")
+    st.markdown(
+        """
+    Aggregate of all individuals (or mice) to show largest n (selected below) clonotypes across the organ|subset groups.
+    """
     )
-    selected_rows = metric_selection_event.selection.get("rows", [])
-    if selected_rows:
-        selected_row_idx = int(selected_rows[0])
-        clicked_node = str(metrics_display_df.iloc[selected_row_idx]["node"])
-        if clicked_node != selected_metric_node:
-            st.session_state["network_metrics_selected_node"] = clicked_node
-            st.rerun()
     
-st.subheader("Filtered Data")
-st.dataframe(filtered, width="stretch")
+    with st.sidebar:
+        st.header("Filters")
+        chain_selected = st.selectbox(
+            "Chain", sorted(df["chain"].unique()))
 
-csv_buffer = io.StringIO()
-filtered.to_csv(csv_buffer, index=False)
-st.download_button(
-    "Download filtered data", csv_buffer.getvalue(), file_name="filtered_clonotypes.csv"
-)
+        organ_selected = st.multiselect(
+            "Organ", sorted(df["organ"].unique()), default=sorted(df["organ"].unique())
+        )
+        cell_selected = st.multiselect(
+            "Cell type",
+            sorted(df["cell_type"].unique()),
+            default=sorted(df["cell_type"].unique()),
+        )
+
+    filtered = df[
+        (df["organ"].isin(organ_selected))
+        & (df["cell_type"].isin(cell_selected))
+        & (df["chain"] == chain_selected)
+    ].copy()
+
+    if filtered.empty:
+        st.warning("No data match the selected filters.")
+        st.stop()
+
+    total_mice = filtered["mouse"].nunique()
+
+    metrics_cols = st.columns(1)
+    metrics_cols[0].metric("Individuals", total_mice)
+
+    if total_mice == 0:
+        st.warning("No individual records available to summarize.")
+        return
+
+    chain_counts = filtered["chain"].value_counts()
+    if not chain_counts.empty:
+        sorted_chains = sorted(chain_counts.items(), key=lambda item: -item[1])
+        display_items = sorted_chains[:3] # Display max 3
+        extra = len(sorted_chains) - len(display_items)
+        summary_text = ", ".join(f"{chain} ({count})" for chain, count in display_items)
+        if extra > 0:
+            summary_text = f"{summary_text}, +{extra} more"
+        st.caption(f"Chain counts: {summary_text}")
+    
+    mouse_summary = (
+        filtered.groupby("mouse", as_index=False)
+        .agg(
+            total_clonotypes=("clonotype", "nunique"),
+            organs=("organ", "nunique"),
+            cell_types=("cell_type", "nunique"),
+        )
+    )
+
+    st.markdown("### Individual metrics")
+    st.dataframe(
+        mouse_summary[
+            [
+                "mouse",
+                "total_clonotypes",
+                "organs",
+                "cell_types",
+            ]
+        ],
+        width="content",
+    )
+
+
+    st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
+    
+    select_cols = st.columns(2)
+    # Select organ|clonotype
+    organ_cell_options = sorted(filtered["organ_cell"].unique())
+    with select_cols[0]:
+        subset_selected = st.selectbox(
+            "Rank top clonotypes by organ/cell combination",
+            organ_cell_options,
+            index=0,
+            help="Select a subset whose top clones across all individuals will be shown.",
+        )
+
+    # Select top n between 1 and max clonotypes
+    max_clonotypes = (
+            filtered[filtered["organ_cell"] == subset_selected]["clonotype"].nunique()
+    )
+    max_clonotypes = max(1, max_clonotypes)
+    
+    with select_cols[1]:
+        top_n = st.number_input(
+            "Select number of largest clonotypes to display",
+            min_value=1,
+            max_value=max_clonotypes,
+            value=min(10, max_clonotypes),
+            step=1,
+            help="Choose how many of the most abundant clonotypes should appear on the CD4/CD8 line plots.",
+        )
+
+    # Count top n clonotypes per mouse
+    clono_totals = (
+        filtered[filtered["organ_cell"] == subset_selected]
+        .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
+        .sum()
+        .sort_values(["mouse", "abundance"], ascending=False)
+    )
+    #selected_clonotypes = clono_totals.groupby("mouse").head(top_n)["clonotype"].tolist()
+    selected_clonotypes = clono_totals.groupby("mouse").head(top_n)
+    
+    log_axis_summary = st.checkbox(
+        "Log10 scale",
+        value=True,
+        help="Display % of lineage pool on log10 axis and treat zero values as pseudo 10⁻⁴.",
+    )
+
+    # Grab top clones only
+    topClones = pd.merge(selected_clonotypes[["mouse","clonotype"]], filtered, how="left", on=["mouse","clonotype"])
+
+    topClones["cd_group"] = topClones["cell_type"].apply(classify_cd4_cd8)
+    
+    if topClones.empty:
+        st.info("No clonotypes available for the lineage plots.")
+    else:
+        for lineage in ["CD4", "CD8"]:
+            lineage_df = topClones[topClones["cd_group"] == lineage].copy()
+            st.markdown(f'**{lineage} clonotype abundance across organ/cell**')
+            if lineage_df.empty:
+                st.info(f"No {lineage} subsets found for the current filter.")
+                continue
+            lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
+            # 1. Pivot (clonotypes x organ_cells) per individual!
+            all_mice = lineage_df.mouse.unique()
+            lineage_pivot = lineage_df.pivot_table(
+                index=["clonotype", "mouse"], 
+                columns=["organ_cell"], 
+                values="abundance", 
+                aggfunc="sum",
+                fill_value=0
+            ).reset_index()
+            # 2. Flatten back to "long"
+            organ_cell_line = lineage_pivot.melt(
+                    id_vars=["clonotype","mouse"],
+                    value_name="abundance"
+            )
+            
+            if log_axis_summary:
+                organ_cell_line["abundance"] = organ_cell_line["abundance"].where(
+                    organ_cell_line["abundance"] > 0, PSEUDO_ZERO
+                )
+
+            cd_fig = px.line(
+                organ_cell_line,
+                x="organ_cell",
+                y="abundance",
+                color="mouse",
+                #line_dash="clonotype",
+                line_group="clonotype",
+                markers=True,
+                labels={
+                    "organ_cell": "Organ/Cell",
+                    "abundance": "% Pool Size",
+                    "mouse": "Individual",
+                },
+                title=f"{lineage} clonotype abundance across individuals",
+                category_orders={
+                    "organ_cell": lineage_organ_cells,
+                    "mouse": all_mice,
+                    "clonotype": selected_clonotypes,
+                },
+            )
+            yaxis_config = {
+                "title": "% Pool Size",
+                "type": "log" if log_axis_summary else "linear",
+            }
+            if log_axis_summary:
+                tick_exponents = list(range(-5, 3))
+                yaxis_config.update(
+                    {
+                        "tickvals": [10 ** exp for exp in tick_exponents],
+                        "ticktext": [
+                            "0" if exp == -5 else f"10{superscript(exp)}"
+                            for exp in tick_exponents
+                        ],
+                        "range": [tick_exponents[0], tick_exponents[-1]],
+                    }
+                )
+            cd_fig.update_layout(
+                height=420,
+                yaxis=yaxis_config,
+                xaxis_title="Organ/Cell",
+            )
+            if log_axis_summary:
+                cd_fig.add_hline(
+                    y=PSEUDO_ZERO,
+                    line_dash="dash",
+                    line_color="#888888",
+                    opacity=0.6,
+                )
+
+
+            cd_fig.update_xaxes(
+                tickmode="array",
+                tickvals=lineage_organ_cells,
+                ticktext=build_highlighted_tick_labels(
+                    lineage_organ_cells,
+                    subset_selected,
+                ),
+            )
+
+            #cd_fig.update_xaxes(tickangle=-45)
+            st.plotly_chart(cd_fig, width="stretch")
+
+    display_count = max(10, top_n)
+    st.subheader("Top clonotypes across individuals")
+    st.caption("Sorted by total abundance for the selected subset across all mice.")
+    st.dataframe(topClones, use_container_width=True)
+
+
+def main():
+    st.sidebar.title("Navigation")
+    page = st.sidebar.radio(
+        "Choose a page",
+        ("Per individual", "Summary all individuals"),
+        index=0,
+        help="Switch between the detailed per-mouse view and the cohort summary.",
+    )
+
+    df = load_dataset_from_sidebar()
+
+    if page == "Per individual":
+        run_per_individual_page(df)
+    else:
+        run_summary_all_page(df)
+
+if __name__ == "__main__":
+    main()

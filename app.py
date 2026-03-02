@@ -359,6 +359,338 @@ def superscript(exponent: int) -> str:
     return "".join(parts)
 
 
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    color = str(color).strip()
+    if color.startswith("#") and len(color) == 7:
+        r = int(color[1:3], 16)
+        g = int(color[3:5], 16)
+        b = int(color[5:7], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+    if color.startswith("rgb(") and color.endswith(")"):
+        return color.replace("rgb(", "rgba(").replace(")", f", {alpha})")
+    return f"rgba(68,68,68,{alpha})"
+
+
+def build_clonotype_color_map(clonotypes: List[str]) -> Dict[str, str]:
+    palette = (
+        px.colors.qualitative.Plotly
+        + px.colors.qualitative.Dark24
+        + px.colors.qualitative.Alphabet
+        + px.colors.qualitative.Set3
+    )
+    ordered = [str(clonotype) for clonotype in clonotypes]
+    return {
+        clonotype: palette[idx % len(palette)]
+        for idx, clonotype in enumerate(ordered)
+    }
+
+
+def build_stacked_clonotype_band_figure(
+    lineage_df: pd.DataFrame,
+    selected_clonotypes: List[str],
+    selected_organ_cell: str,
+    lineage_label: str,
+    clonotype_color_map: Dict[str, str],
+) -> Optional[go.Figure]:
+    if lineage_df.empty:
+        return None
+
+    lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
+    if not lineage_organ_cells:
+        return None
+
+    lineage_pivot = (
+        lineage_df.pivot_table(
+            index="clonotype",
+            columns="organ_cell",
+            values="abundance",
+            aggfunc="sum",
+            fill_value=0.0,
+        )
+        .reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0.0)
+        .astype(float)
+    )
+    lineage_pool_size = float(lineage_df["abundance"].sum())
+    if lineage_pool_size > 0:
+        lineage_pivot = (lineage_pivot / lineage_pool_size) * 100.0
+
+    active_clonotypes = [
+        clonotype
+        for clonotype in selected_clonotypes
+        if clonotype in lineage_pivot.index and float(lineage_pivot.loc[clonotype].sum()) > 0
+    ]
+    if not active_clonotypes:
+        return None
+
+    x_values = list(range(len(lineage_organ_cells)))
+    bar_half_width = 0.32
+    cumulative = np.zeros(len(lineage_organ_cells), dtype=float)
+    segment_bounds: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for clonotype in active_clonotypes:
+        y_vals = lineage_pivot.loc[clonotype].to_numpy(dtype=float)
+        lower = cumulative.copy()
+        upper = lower + y_vals
+        segment_bounds[clonotype] = (lower, upper, y_vals)
+        cumulative = upper
+
+    flow_fig = go.Figure()
+    bar_width = 0.62
+    bar_half_width = bar_width / 2.0
+
+    for clonotype in active_clonotypes:
+        lower, upper, y_vals = segment_bounds[clonotype]
+        band_color = _hex_to_rgba(clonotype_color_map[clonotype], 0.23)
+        for idx in range(len(x_values) - 1):
+            if y_vals[idx] <= 0 and y_vals[idx + 1] <= 0:
+                continue
+            left_x = x_values[idx] + bar_half_width
+            right_x = x_values[idx + 1] - bar_half_width
+            flow_fig.add_trace(
+                go.Scatter(
+                    x=[left_x, right_x, right_x, left_x, left_x],
+                    y=[
+                        lower[idx],
+                        lower[idx + 1],
+                        upper[idx + 1],
+                        upper[idx],
+                        lower[idx],
+                    ],
+                    mode="lines",
+                    line={"width": 0},
+                    fill="toself",
+                    fillcolor=band_color,
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+    for clonotype in active_clonotypes:
+        _, _, y_vals = segment_bounds[clonotype]
+        flow_fig.add_trace(
+            go.Bar(
+                x=x_values,
+                y=y_vals,
+                width=[bar_width] * len(x_values),
+                name=clonotype,
+                marker={"color": clonotype_color_map[clonotype]},
+                hovertemplate=(
+                    "Organ/Cell: %{customdata[0]}<br>"
+                    "Clonotype: %{fullData.name}<br>"
+                    "Abundance: %{y:.3f}%<extra></extra>"
+                ),
+                customdata=np.array(lineage_organ_cells, dtype=object).reshape(-1, 1),
+            )
+        )
+
+    flow_fig.update_layout(
+        barmode="stack",
+        bargap=0.0,
+        height=460,
+        title=f"{lineage_label} stacked clonotype abundance flow",
+        xaxis_title="Organ/Cell",
+        yaxis_title="% Pool Size",
+        legend_title="Clonotype",
+    )
+    flow_fig.update_xaxes(
+        tickmode="array",
+        tickvals=x_values,
+        ticktext=build_highlighted_tick_labels(lineage_organ_cells, selected_organ_cell),
+    )
+
+    return flow_fig
+
+
+def build_clonotype_presence_grid_figure(
+    df: pd.DataFrame,
+    selected_clonotypes: List[str],
+    top_n: int,
+    selected_organ_cell: str,
+    show_clonotype_sequences: bool = True,
+    x_spacing: float = 0.62,
+    row_categories: Optional[List[str]] = None,
+) -> Optional[go.Figure]:
+    if df.empty or not selected_clonotypes:
+        return None
+
+    organ_cell_totals = (
+        df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
+        .sum()
+        .sort_values(
+            ["organ_cell", "abundance", "clonotype"],
+            ascending=[True, False, True],
+            kind="mergesort",
+        )
+    )
+    row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
+    row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
+    row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
+        "organ_cell"
+    )["clonotype"].apply(set).to_dict()
+    available_rows = set(df["organ_cell"].unique())
+
+    grid_rows = (
+        list(row_categories)
+        if row_categories is not None
+        else sorted(df["organ_cell"].unique())
+    )
+    grid_cols = [str(clonotype) for clonotype in selected_clonotypes]
+    if not grid_rows or not grid_cols:
+        return None
+
+    x_positions = [idx * x_spacing for idx in range(len(grid_cols))]
+    x_tick_labels = (
+        grid_cols
+        if show_clonotype_sequences
+        else [f"C{idx + 1}" for idx in range(len(grid_cols))]
+    )
+    top_in_row_label = f"Top-{int(top_n)} in row"
+    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
+
+    grid_records: List[Dict[str, object]] = []
+    for row_idx, organ_cell in enumerate(grid_rows):
+        if organ_cell not in available_rows:
+            continue
+        topn_set = row_topn_map.get(organ_cell, set())
+        present_set = row_present_map.get(organ_cell, set())
+        for col_idx, clonotype in enumerate(grid_cols):
+            if clonotype in topn_set:
+                status = top_in_row_label
+            elif clonotype in present_set:
+                status = present_not_top_label
+            else:
+                status = "Not present"
+            grid_records.append(
+                {
+                    "row_idx": row_idx,
+                    "col_idx": x_positions[col_idx],
+                    "organ_cell": organ_cell,
+                    "clonotype": clonotype,
+                    "status": status,
+                }
+            )
+    grid_df = pd.DataFrame(grid_records)
+    if grid_df.empty:
+        return None
+
+    grid_fig = go.Figure()
+    status_styles = [
+        (top_in_row_label, "#d62728", "#7f1d1d"),
+        (present_not_top_label, "#1f77b4", "#1f77b4"),
+        ("Not present", "#ffffff", "#9ca3af"),
+    ]
+    for status, fill_color, line_color in status_styles:
+        status_df = grid_df[grid_df["status"] == status]
+        if status_df.empty:
+            continue
+        grid_fig.add_trace(
+            go.Scatter(
+                x=status_df["col_idx"],
+                y=status_df["row_idx"],
+                mode="markers",
+                name=status,
+                marker={
+                    "size": 12,
+                    "symbol": "circle",
+                    "color": fill_color,
+                    "line": {"width": 1.3, "color": line_color},
+                },
+                customdata=status_df[["organ_cell", "clonotype", "status"]].to_numpy(),
+                hovertemplate=(
+                    "Organ/Cell: %{customdata[0]}<br>"
+                    "Clonotype: %{customdata[1]}<br>"
+                    "State: %{customdata[2]}<extra></extra>"
+                ),
+            )
+        )
+
+    grid_fig.update_layout(
+        height=max(300, 80 + 38 * len(grid_rows)),
+        xaxis_title=f"Top {int(top_n)} clonotypes from selected organ|cell",
+        yaxis_title=None,
+        plot_bgcolor="#ffffff",
+        showlegend=False,
+        margin={"l": 80, "r": 20, "t": 40, "b": 70},
+    )
+    grid_fig.update_xaxes(
+        tickmode="array",
+        tickvals=x_positions,
+        ticktext=x_tick_labels,
+        tickangle=90 if show_clonotype_sequences else 0,
+        range=[-0.3 * x_spacing, (len(grid_cols) - 1 + 0.3) * x_spacing],
+        showgrid=False,
+        zeroline=False,
+    )
+    grid_fig.update_yaxes(
+        tickmode="array",
+        tickvals=list(range(len(grid_rows))),
+        ticktext=build_highlighted_tick_labels(grid_rows, selected_organ_cell),
+        autorange="reversed",
+        range=[len(grid_rows) - 0.5, -0.5],
+        showgrid=False,
+        zeroline=False,
+    )
+    return grid_fig
+
+
+def render_clonotype_presence_grid_legend(top_n: int) -> None:
+    legend_cols = st.columns(3)
+    legend_items = [
+        (f"Top-{int(top_n)} in row", "#d62728", "#7f1d1d"),
+        (f"Present (not Top-{int(top_n)} in row)", "#1f77b4", "#1f77b4"),
+        ("Not present", "#ffffff", "#9ca3af"),
+    ]
+    for col, (label, fill_color, border_color) in zip(legend_cols, legend_items):
+        with col:
+            st.markdown(
+                (
+                    f"<div style='display:flex;align-items:center;gap:8px;'>"
+                    f"<span style='display:inline-block;width:12px;height:12px;"
+                    f"border-radius:50%;background:{fill_color};"
+                    f"border:1.5px solid {border_color};'></span>"
+                    f"<span>{label}</span></div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+
+def render_plot_download_buttons(
+    fig: go.Figure,
+    base_filename: str,
+    key_prefix: str,
+) -> None:
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", base_filename).strip("_") or "plot"
+    png_bytes: Optional[bytes] = None
+    pdf_bytes: Optional[bytes] = None
+    try:
+        png_bytes = fig.to_image(format="png", scale=2)
+    except Exception:
+        png_bytes = None
+    try:
+        pdf_bytes = fig.to_image(format="pdf")
+    except Exception:
+        pdf_bytes = None
+
+    button_cols = st.columns(2)
+    with button_cols[0]:
+        if png_bytes is not None:
+            st.download_button(
+                "Download PNG",
+                data=png_bytes,
+                file_name=f"{safe_filename}.png",
+                mime="image/png",
+                key=f"{key_prefix}_download_png",
+            )
+    with button_cols[1]:
+        if pdf_bytes is not None:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name=f"{safe_filename}.pdf",
+                mime="application/pdf",
+                key=f"{key_prefix}_download_pdf",
+            )
+
+
 def calculate_network_metrics(
     edge_df: pd.DataFrame,
     organ_cell_summary: pd.DataFrame,
@@ -756,7 +1088,7 @@ def run_per_individual_page(df: pd.DataFrame):
         filtered[filtered["organ_cell"] == top_n_scope]
         .groupby("clonotype", as_index=False)["abundance"]
         .sum()
-        .sort_values("abundance", ascending=False)
+        .sort_values(["abundance", "clonotype"], ascending=[False, True], kind="mergesort")
     )
     selected_clonotypes = clono_totals.head(top_n)["clonotype"].tolist()
     heatmap_df = (
@@ -786,7 +1118,6 @@ def run_per_individual_page(df: pd.DataFrame):
 
     st.plotly_chart(heatmap_fig, width="stretch")
 
-    pseudo_zero = 1e-4
     st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
     st.caption(
         "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
@@ -795,10 +1126,18 @@ def run_per_individual_page(df: pd.DataFrame):
     log_axis = st.checkbox(
         "Log10 scale",
         value=True,
-        help="Display % pool size on a log10 axis; zero values are shown using a small pseudo value for visibility.",
+        help=(
+            "Display % pool size on a log10 axis. Missing clone values are shown with a "
+            "dynamic pseudo-0 per organ|cell: 0.5 x the lowest observed abundance."
+        ),
     )
+    if log_axis:
+        st.caption(
+            "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0 used for Log10 display)."
+        )
     lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
     lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
+    clonotype_color_map = build_clonotype_color_map(selected_clonotypes)
     for lineage in ["CD4", "CD8"]:
         lineage_df = lineage_filtered[lineage_filtered["cd_group"] == lineage].copy()
         st.markdown(f"**{lineage} clonotype abundance across organ/cell**")
@@ -820,6 +1159,7 @@ def run_per_individual_page(df: pd.DataFrame):
             id_vars="clonotype", 
             value_name="abundance"
         )
+        organ_cell_line["is_pseudo"] = False
         lineage_pool_size = float(lineage_df["abundance"].sum())
         if lineage_pool_size > 0:
             organ_cell_line["pool_pct"] = (
@@ -829,8 +1169,36 @@ def run_per_individual_page(df: pd.DataFrame):
             organ_cell_line["pool_pct"] = 0.0
         organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct"]
         if log_axis:
-            organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct_plot"].where(
-                organ_cell_line["pool_pct_plot"] > 0, pseudo_zero
+            positive_lineage = organ_cell_line[organ_cell_line["pool_pct"] > 0].copy()
+            pseudo_by_group = (
+                positive_lineage.groupby("organ_cell", as_index=False)["pool_pct"]
+                .min()
+                .rename(columns={"pool_pct": "pseudo_zero"})
+            )
+            pseudo_by_group["pseudo_zero"] = pseudo_by_group["pseudo_zero"] * 0.5
+            organ_cell_line = organ_cell_line.merge(
+                pseudo_by_group,
+                on="organ_cell",
+                how="left",
+            )
+            lineage_min_positive = (
+                float(positive_lineage["pool_pct"].min())
+                if not positive_lineage.empty
+                else np.nan
+            )
+            lineage_pseudo = (
+                lineage_min_positive * 0.5
+                if not np.isnan(lineage_min_positive)
+                else float(np.finfo(float).tiny)
+            )
+            organ_cell_line["pseudo_zero"] = organ_cell_line["pseudo_zero"].fillna(
+                lineage_pseudo
+            )
+            organ_cell_line["is_pseudo"] = organ_cell_line["pool_pct_plot"] <= 0
+            organ_cell_line["pool_pct_plot"] = np.where(
+                organ_cell_line["pool_pct_plot"] > 0,
+                organ_cell_line["pool_pct_plot"],
+                organ_cell_line["pseudo_zero"],
             )
         line_fig = px.line(
             organ_cell_line,
@@ -838,6 +1206,7 @@ def run_per_individual_page(df: pd.DataFrame):
             y="pool_pct_plot",
             color="clonotype",
             markers=True,
+            color_discrete_map=clonotype_color_map,
             labels={"organ_cell": "Organ/Cell", "pool_pct_plot": "% Pool Size"},
         )
         yaxis_config = {
@@ -859,13 +1228,6 @@ def run_per_individual_page(df: pd.DataFrame):
         else:
             yaxis_config.setdefault("range", [0, 100])
         line_fig.update_layout(height=420, yaxis=yaxis_config)
-        if log_axis:
-            line_fig.add_hline(
-                y=pseudo_zero,
-                line_dash="dash",
-                line_color="#888888",
-                opacity=0.6,
-            )
         line_fig.update_xaxes(
             tickmode="array",
             tickvals=lineage_organ_cells,
@@ -874,6 +1236,30 @@ def run_per_individual_page(df: pd.DataFrame):
                 top_n_scope,
             ),
         )
+        pseudo_points = organ_cell_line[organ_cell_line["is_pseudo"]].copy()
+        if not pseudo_points.empty:
+            line_fig.add_trace(
+                go.Scatter(
+                    x=pseudo_points["organ_cell"],
+                    y=pseudo_points["pool_pct_plot"],
+                    mode="markers",
+                    marker={
+                        "symbol": "circle-open",
+                        "size": 11,
+                        "color": "#222222",
+                        "line": {"width": 1.5, "color": "#222222"},
+                    },
+                    name="Pseudo-0",
+                    showlegend=True,
+                    customdata=pseudo_points[["clonotype"]].to_numpy(),
+                    hovertemplate=(
+                        "Organ/Cell: %{x}<br>"
+                        "Value: %{y:.4g}<br>"
+                        "Clonotype: %{customdata[0]}<br>"
+                        "Imputed from pseudo-0<extra></extra>"
+                    ),
+                )
+            )
         st.plotly_chart(line_fig, width="stretch")
 
 
@@ -1060,6 +1446,101 @@ def run_per_individual_page(df: pd.DataFrame):
                 st.session_state["network_metrics_selected_node"] = clicked_node
                 st.rerun()
 
+    st.subheader("Stacked Clonotype Abundance Flow")
+    st.caption(
+        "Stacked bars show clonotype % pool size per organ/cell. "
+        "Semi-transparent colored bands connect adjacent organ/cell segments for the same clonotype."
+    )
+    for lineage in ["CD4", "CD8"]:
+        lineage_df = lineage_filtered[lineage_filtered["cd_group"] == lineage].copy()
+        st.markdown(f"**{lineage} stacked abundance flow**")
+        if lineage_df.empty:
+            st.info(f"No {lineage} cells found for current filters.")
+            continue
+        stacked_flow_fig = build_stacked_clonotype_band_figure(
+            lineage_df=lineage_df,
+            selected_clonotypes=selected_clonotypes,
+            selected_organ_cell=top_n_scope,
+            lineage_label=lineage,
+            clonotype_color_map=clonotype_color_map,
+        )
+        if stacked_flow_fig is None:
+            st.info(f"No non-zero {lineage} abundances available for stacked flow.")
+            continue
+        st.plotly_chart(stacked_flow_fig, width="stretch")
+
+    st.subheader("Clonotype Presence Grid Across Organ/Cell")
+    st.caption(
+        "Separate grids are shown for CD4 and CD8. "
+        f"Columns are lineage-specific top {int(top_n)} clonotypes from {top_n_scope}. "
+        f"Red: in that row organ|cell top-{int(top_n)}, "
+        f"Blue: present but not in that row top-{int(top_n)}, "
+        "White: not present."
+    )
+    show_clonotype_sequences = st.checkbox(
+        "Show clonotype sequences on x-axis",
+        value=False,
+        help="Turn off to use compact rank labels (C1, C2, ...).",
+    )
+    grid_source_with_lineage = filtered.copy()
+    grid_source_with_lineage["cd_group"] = grid_source_with_lineage["cell_type"].apply(
+        classify_cd4_cd8
+    )
+    plotted_any_grid = False
+    for lineage in ["CD4", "CD8"]:
+        st.markdown(f"**{lineage}**")
+        lineage_plotted = False
+        lineage_grid_df = grid_source_with_lineage[
+            grid_source_with_lineage["cd_group"] == lineage
+        ].copy()
+        shared_grid_rows = sorted(lineage_grid_df["organ_cell"].unique())
+        if lineage_grid_df.empty:
+            st.info(f"No {lineage} data available for the current filters.")
+            continue
+        lineage_reference_totals = (
+            lineage_grid_df[lineage_grid_df["organ_cell"] == top_n_scope]
+            .groupby("clonotype", as_index=False)["abundance"]
+            .sum()
+            .sort_values(
+                ["abundance", "clonotype"],
+                ascending=[False, True],
+                kind="mergesort",
+            )
+        )
+        lineage_grid_clonotypes = (
+            lineage_reference_totals.head(int(top_n))["clonotype"].astype(str).tolist()
+        )
+        if not lineage_grid_clonotypes:
+            st.info(
+                f"No {lineage} top clonotypes available in reference organ|cell {top_n_scope}."
+            )
+            continue
+        grid_fig = build_clonotype_presence_grid_figure(
+            df=lineage_grid_df,
+            selected_clonotypes=lineage_grid_clonotypes,
+            top_n=int(top_n),
+            selected_organ_cell=top_n_scope,
+            show_clonotype_sequences=show_clonotype_sequences,
+            row_categories=shared_grid_rows,
+        )
+        if grid_fig is None:
+            st.info(f"No {lineage} clonotype presence grid available for current filters.")
+            continue
+        plotted_any_grid = True
+        lineage_plotted = True
+        st.plotly_chart(grid_fig, width="stretch")
+        render_plot_download_buttons(
+            grid_fig,
+            base_filename=f"clonotype_presence_grid_{lineage}_{top_n_scope}".replace(" ", "_"),
+            key_prefix=f"lineage_grid_{lineage}",
+        )
+        if lineage == "CD4" and lineage_plotted:
+            render_clonotype_presence_grid_legend(int(top_n))
+    if plotted_any_grid:
+        render_clonotype_presence_grid_legend(int(top_n))
+    else:
+        st.info("No lineage-specific clonotype presence grids available for current filters.")
+
     st.subheader("Filtered Data")
     st.dataframe(filtered, width="stretch")
 
@@ -1182,7 +1663,11 @@ def run_summary_all_page(df: pd.DataFrame):
         filtered[filtered["organ_cell"] == subset_selected]
         .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
         .sum()
-        .sort_values(["mouse", "abundance"], ascending=False)
+        .sort_values(
+            ["mouse", "abundance", "clonotype"],
+            ascending=[True, False, True],
+            kind="mergesort",
+        )
     )
     selected_clonotypes = clono_totals.groupby("mouse").head(top_n).copy()
     selected_clonotypes["clonotype_rank"] = (
@@ -1201,11 +1686,16 @@ def run_summary_all_page(df: pd.DataFrame):
         )
     with scale_cols[1]:
         normalize_topn_summary = st.checkbox(
-            "Normalize top-N per mouse to 100%",
+            f"Normalize top-{int(top_n)} per mouse to 100%",
             value=False,
-            help="Normalize selected top-N clone abundances so each mouse sums to 100%.",
+            help=(
+                f"Normalize selected top-{int(top_n)} clone abundances so each mouse sums to 100%."
+            ),
         )
-
+    if log_axis_summary:
+        st.caption(
+            "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0 used for Log10 display)."
+        )
     # Grab top clones only
     topClones = pd.merge(
         selected_clonotypes[["mouse", "clonotype", "clonotype_rank"]],
@@ -1400,69 +1890,73 @@ def run_summary_all_page(df: pd.DataFrame):
                 )
             st.plotly_chart(cd_fig, width="stretch")
 
-        st.subheader("Cosine Similarity Across Individuals (Top Clones)")
-        st.caption(
-            "Cosine similarity is rank-based: each individual's vector uses "
-            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
+        summary_metric_view = st.selectbox(
+            "Similarity analysis to show",
+            ("Cosine", "Correlation"),
+            index=0,
+            help=(
+                "Choose which similarity metric section to display. "
+                "Both analyses are still computed and available."
+            ),
         )
-        if not cosine_by_lineage:
-            st.info("At least two individuals with non-empty vectors are required to compute cosine similarity.")
-        else:
-            for lineage, similarity_df in cosine_by_lineage.items():
-                st.markdown(f"**{lineage} cosine matrix**")
-                heatmap_fig = px.imshow(
-                    similarity_df,
-                    zmin=0,
-                    zmax=1,
-                    color_continuous_scale="Blues",
-                    text_auto=".2f",
-                    labels={"x": "Individual", "y": "Individual", "color": "Cosine similarity"},
-                )
-                heatmap_fig.update_layout(height=420)
-                st.plotly_chart(heatmap_fig, width="stretch")
-                st.dataframe(similarity_df.round(4), width="stretch")
 
-        st.subheader("Correlation Across Individuals (Top Clones)")
-        st.caption(
-            "Pearson correlation is rank-based: each individual's vector uses "
-            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
-        )
-        if not correlation_by_lineage:
-            st.info("At least two individuals with non-empty vectors are required to compute correlation.")
+        if summary_metric_view == "Cosine":
+            st.subheader("Cosine Similarity Across Individuals (Top Clones)")
+            st.caption(
+                "Cosine similarity is rank-based: each individual's vector uses "
+                "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
+            )
+            if not cosine_by_lineage:
+                st.info("At least two individuals with non-empty vectors are required to compute cosine similarity.")
+            else:
+                for lineage, similarity_df in cosine_by_lineage.items():
+                    st.markdown(f"**{lineage} cosine matrix**")
+                    heatmap_fig = px.imshow(
+                        similarity_df,
+                        zmin=0,
+                        zmax=1,
+                        color_continuous_scale="Blues",
+                        text_auto=".2f",
+                        labels={"x": "Individual", "y": "Individual", "color": "Cosine similarity"},
+                    )
+                    heatmap_fig.update_layout(height=420)
+                    st.plotly_chart(heatmap_fig, width="stretch")
+                    st.dataframe(similarity_df.round(4), width="stretch")
         else:
-            for lineage, similarity_df in correlation_by_lineage.items():
-                st.markdown(f"**{lineage} correlation matrix**")
-                heatmap_fig = px.imshow(
-                    similarity_df,
-                    zmin=-1,
-                    zmax=1,
-                    color_continuous_scale="Blues",
-                    text_auto=".2f",
-                    labels={"x": "Individual", "y": "Individual", "color": "Correlation"},
-                )
-                heatmap_fig.update_layout(height=420)
-                st.plotly_chart(heatmap_fig, width="stretch")
-                st.dataframe(similarity_df.round(4), width="stretch")
+            st.subheader("Correlation Across Individuals (Top Clones)")
+            st.caption(
+                "Pearson correlation is rank-based: each individual's vector uses "
+                "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
+            )
+            if not correlation_by_lineage:
+                st.info("At least two individuals with non-empty vectors are required to compute correlation.")
+            else:
+                for lineage, similarity_df in correlation_by_lineage.items():
+                    st.markdown(f"**{lineage} correlation matrix**")
+                    heatmap_fig = px.imshow(
+                        similarity_df,
+                        zmin=-1,
+                        zmax=1,
+                        color_continuous_scale="Blues",
+                        text_auto=".2f",
+                        labels={"x": "Individual", "y": "Individual", "color": "Correlation"},
+                    )
+                    heatmap_fig.update_layout(height=420)
+                    st.plotly_chart(heatmap_fig, width="stretch")
+                    st.dataframe(similarity_df.round(4), width="stretch")
 
-        st.subheader("Cosine Similarity Across Individuals (All Organ/Cell Selections)")
-        st.caption(
-            "Single summary plot across all organ/cell selections. "
-            "Lines show mean pairwise mouse cosine similarity; shaded bands show 95% confidence ranges."
-        )
         all_selection_cosine_records: List[Dict[str, object]] = []
-
-        st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
-        st.caption(
-            "Single summary plot across all organ/cell selections. "
-            "Lines show mean pairwise mouse correlation; shaded bands show 95% confidence ranges."
-        )
         all_selection_correlation_records: List[Dict[str, object]] = []
         for subset_option in organ_cell_options:
             subset_totals = (
                 filtered[filtered["organ_cell"] == subset_option]
                 .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
                 .sum()
-                .sort_values(["mouse", "abundance"], ascending=False)
+                .sort_values(
+                    ["mouse", "abundance", "clonotype"],
+                    ascending=[True, False, True],
+                    kind="mergesort",
+                )
             )
             if subset_totals.empty:
                 continue
@@ -1565,200 +2059,301 @@ def run_summary_all_page(df: pd.DataFrame):
         )
         lineage_colors = {"CD4": "#1f77b4", "CD8": "#ff7f0e"}
 
-        if not all_selection_cosine_records:
-            st.info(
-                "No all-selection cosine matrices could be computed with the current filters."
+        if summary_metric_view == "Cosine":
+            st.subheader("Cosine Similarity Across Individuals (All Organ/Cell Selections)")
+            st.caption(
+                "Single summary plot across all organ/cell selections. "
+                "Lines show mean pairwise mouse cosine similarity; shaded bands show 95% confidence ranges."
             )
+            if not all_selection_cosine_records:
+                st.info(
+                    "No all-selection cosine matrices could be computed with the current filters."
+                )
+            else:
+                cosine_summary_df = pd.DataFrame(all_selection_cosine_records)
+                for lineage in ["CD4", "CD8"]:
+                    lineage_axis_options = sorted(
+                        filtered_with_lineage[
+                            filtered_with_lineage["cd_group"] == lineage
+                        ]["organ_cell"].unique()
+                    )
+                    if not lineage_axis_options:
+                        continue
+                    lineage_stats = cosine_summary_df[
+                        cosine_summary_df["lineage"] == lineage
+                    ].copy()
+                    if lineage_stats.empty:
+                        continue
+                    summary_plot = go.Figure()
+                    lineage_stats = lineage_stats[
+                        lineage_stats["organ_cell"].isin(lineage_axis_options)
+                    ].copy()
+                    if lineage_stats.empty:
+                        continue
+                    lineage_stats["organ_cell"] = pd.Categorical(
+                        lineage_stats["organ_cell"],
+                        categories=lineage_axis_options,
+                        ordered=True,
+                    )
+                    lineage_stats = lineage_stats.sort_values("organ_cell")
+                    x_values = lineage_stats["organ_cell"].astype(str).tolist()
+                    lower = lineage_stats["ci_low"].tolist()
+                    upper = lineage_stats["ci_high"].tolist()
+                    mean = lineage_stats["mean_cosine"].tolist()
+                    color = lineage_colors.get(lineage, "#444444")
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=upper,
+                            mode="lines",
+                            line={"width": 0},
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=lower,
+                            mode="lines",
+                            line={"width": 0},
+                            fill="tonexty",
+                            fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
+                            if color.startswith("rgb(")
+                            else "rgba(31,119,180,0.18)"
+                            if lineage == "CD4"
+                            else "rgba(255,127,14,0.18)",
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=mean,
+                            mode="lines+markers",
+                            line={"color": color, "width": 2},
+                            marker={"size": 7},
+                            customdata=lineage_stats[
+                                ["ci_low", "ci_high", "n_pairs"]
+                            ].to_numpy(),
+                            hovertemplate=(
+                                "Selection: %{x}<br>"
+                                "Mean cosine: %{y:.3f}<br>"
+                                "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
+                                "Pairs: %{customdata[2]}<extra>"
+                                + lineage
+                                + "</extra>"
+                            ),
+                        )
+                    )
+                    summary_plot.update_layout(
+                        height=420,
+                        title=f"{lineage} mean cosine similarity across selections",
+                        yaxis_title="Cosine similarity",
+                        xaxis_title="Organ/Cell selection",
+                        yaxis={"range": [0, 1]},
+                        showlegend=False,
+                    )
+                    summary_plot.update_xaxes(
+                        categoryorder="array",
+                        categoryarray=lineage_axis_options,
+                    )
+                    st.plotly_chart(summary_plot, width="stretch")
         else:
-            cosine_summary_df = pd.DataFrame(all_selection_cosine_records)
-            for lineage in ["CD4", "CD8"]:
-                lineage_axis_options = sorted(
-                    filtered_with_lineage[
-                        filtered_with_lineage["cd_group"] == lineage
-                    ]["organ_cell"].unique()
+            st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
+            st.caption(
+                "Single summary plot across all organ/cell selections. "
+                "Lines show mean pairwise mouse correlation; shaded bands show 95% confidence ranges."
+            )
+            if not all_selection_correlation_records:
+                st.info(
+                    "No all-selection correlation matrices could be computed with the current filters."
                 )
-                if not lineage_axis_options:
-                    continue
-                lineage_stats = cosine_summary_df[
-                    cosine_summary_df["lineage"] == lineage
-                ].copy()
-                if lineage_stats.empty:
-                    continue
-                summary_plot = go.Figure()
-                lineage_stats = lineage_stats[
-                    lineage_stats["organ_cell"].isin(lineage_axis_options)
-                ].copy()
-                if lineage_stats.empty:
-                    continue
-                lineage_stats["organ_cell"] = pd.Categorical(
-                    lineage_stats["organ_cell"],
-                    categories=lineage_axis_options,
-                    ordered=True,
-                )
-                lineage_stats = lineage_stats.sort_values("organ_cell")
-                x_values = lineage_stats["organ_cell"].astype(str).tolist()
-                lower = lineage_stats["ci_low"].tolist()
-                upper = lineage_stats["ci_high"].tolist()
-                mean = lineage_stats["mean_cosine"].tolist()
-                color = lineage_colors.get(lineage, "#444444")
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=upper,
-                        mode="lines",
-                        line={"width": 0},
-                        hoverinfo="skip",
+            else:
+                correlation_summary_df = pd.DataFrame(all_selection_correlation_records)
+                for lineage in ["CD4", "CD8"]:
+                    lineage_axis_options = sorted(
+                        filtered_with_lineage[
+                            filtered_with_lineage["cd_group"] == lineage
+                        ]["organ_cell"].unique()
+                    )
+                    if not lineage_axis_options:
+                        continue
+                    lineage_stats = correlation_summary_df[
+                        correlation_summary_df["lineage"] == lineage
+                    ].copy()
+                    if lineage_stats.empty:
+                        continue
+                    summary_plot = go.Figure()
+                    lineage_stats = lineage_stats[
+                        lineage_stats["organ_cell"].isin(lineage_axis_options)
+                    ].copy()
+                    if lineage_stats.empty:
+                        continue
+                    lineage_stats["organ_cell"] = pd.Categorical(
+                        lineage_stats["organ_cell"],
+                        categories=lineage_axis_options,
+                        ordered=True,
+                    )
+                    lineage_stats = lineage_stats.sort_values("organ_cell")
+                    x_values = lineage_stats["organ_cell"].astype(str).tolist()
+                    lower = lineage_stats["ci_low"].tolist()
+                    upper = lineage_stats["ci_high"].tolist()
+                    mean = lineage_stats["mean_correlation"].tolist()
+                    color = lineage_colors.get(lineage, "#444444")
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=upper,
+                            mode="lines",
+                            line={"width": 0},
+                            hoverinfo="skip",
+                            showlegend=False,
+                            name=f"{lineage} upper",
+                        )
+                    )
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=lower,
+                            mode="lines",
+                            line={"width": 0},
+                            fill="tonexty",
+                            fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
+                            if color.startswith("rgb(")
+                            else "rgba(31,119,180,0.18)"
+                            if lineage == "CD4"
+                            else "rgba(255,127,14,0.18)",
+                            hoverinfo="skip",
+                            showlegend=False,
+                            name=f"{lineage} CI",
+                        )
+                    )
+                    summary_plot.add_trace(
+                        go.Scatter(
+                            x=x_values,
+                            y=mean,
+                            mode="lines+markers",
+                            name=f"{lineage} mean",
+                            line={"color": color, "width": 2},
+                            marker={"size": 7},
+                            customdata=lineage_stats[
+                                ["ci_low", "ci_high", "n_pairs"]
+                            ].to_numpy(),
+                            hovertemplate=(
+                                "Selection: %{x}<br>"
+                                "Mean correlation: %{y:.3f}<br>"
+                                "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
+                                "Pairs: %{customdata[2]}<extra>"
+                                + lineage
+                                + "</extra>"
+                            ),
+                        )
+                    )
+                    summary_plot.update_layout(
+                        height=420,
+                        title=f"{lineage} mean correlation across selections",
+                        yaxis_title="Correlation",
+                        xaxis_title="Organ/Cell selection",
+                        yaxis={"range": [-1, 1]},
                         showlegend=False,
                     )
-                )
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=lower,
-                        mode="lines",
-                        line={"width": 0},
-                        fill="tonexty",
-                        fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
-                        if color.startswith("rgb(")
-                        else "rgba(31,119,180,0.18)"
-                        if lineage == "CD4"
-                        else "rgba(255,127,14,0.18)",
-                        hoverinfo="skip",
-                        showlegend=False,
+                    summary_plot.update_xaxes(
+                        categoryorder="array",
+                        categoryarray=lineage_axis_options,
                     )
-                )
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=mean,
-                        mode="lines+markers",
-                        line={"color": color, "width": 2},
-                        marker={"size": 7},
-                        customdata=lineage_stats[
-                            ["ci_low", "ci_high", "n_pairs"]
-                        ].to_numpy(),
-                        hovertemplate=(
-                            "Selection: %{x}<br>"
-                            "Mean cosine: %{y:.3f}<br>"
-                            "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
-                            "Pairs: %{customdata[2]}<extra>"
-                            + lineage
-                            + "</extra>"
-                        ),
-                    )
-                )
-                summary_plot.update_layout(
-                    height=420,
-                    title=f"{lineage} mean cosine similarity across selections",
-                    yaxis_title="Cosine similarity",
-                    xaxis_title="Organ/Cell selection",
-                    yaxis={"range": [0, 1]},
-                    showlegend=False,
-                )
-                summary_plot.update_xaxes(
-                    categoryorder="array",
-                    categoryarray=lineage_axis_options,
-                )
-                st.plotly_chart(summary_plot, width="stretch")
+                    st.plotly_chart(summary_plot, width="stretch")
 
-        if not all_selection_correlation_records:
-            st.info(
-                "No all-selection correlation matrices could be computed with the current filters."
-            )
-        else:
-            correlation_summary_df = pd.DataFrame(all_selection_correlation_records)
-            for lineage in ["CD4", "CD8"]:
-                lineage_axis_options = sorted(
-                    filtered_with_lineage[
-                        filtered_with_lineage["cd_group"] == lineage
-                    ]["organ_cell"].unique()
-                )
-                if not lineage_axis_options:
-                    continue
-                lineage_stats = correlation_summary_df[
-                    correlation_summary_df["lineage"] == lineage
-                ].copy()
-                if lineage_stats.empty:
-                    continue
-                summary_plot = go.Figure()
-                lineage_stats = lineage_stats[
-                    lineage_stats["organ_cell"].isin(lineage_axis_options)
-                ].copy()
-                if lineage_stats.empty:
-                    continue
-                lineage_stats["organ_cell"] = pd.Categorical(
-                    lineage_stats["organ_cell"],
-                    categories=lineage_axis_options,
-                    ordered=True,
-                )
-                lineage_stats = lineage_stats.sort_values("organ_cell")
-                x_values = lineage_stats["organ_cell"].astype(str).tolist()
-                lower = lineage_stats["ci_low"].tolist()
-                upper = lineage_stats["ci_high"].tolist()
-                mean = lineage_stats["mean_correlation"].tolist()
-                color = lineage_colors.get(lineage, "#444444")
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=upper,
-                        mode="lines",
-                        line={"width": 0},
-                        hoverinfo="skip",
-                        showlegend=False,
-                        name=f"{lineage} upper",
+    st.subheader("Clonotype Presence Grid Across Organ/Cell")
+    st.caption(
+        "Separate grids are shown for CD4 and CD8. One grid per individual (no pooling across mice). "
+        f"Columns are each mouse's lineage-specific top {int(top_n)} clonotypes from {subset_selected}. "
+        f"Red: in that row organ|cell top-{int(top_n)}, "
+        f"Blue: present but not in that row top-{int(top_n)}, "
+        "White: not present."
+    )
+    show_clonotype_sequences_summary = st.checkbox(
+        "Show clonotype sequences on x-axis",
+        value=False,
+        key="summary_grid_show_sequences",
+        help="Turn off to use compact rank labels (C1, C2, ...).",
+    )
+    plotted_any_grid = False
+    for lineage in ["CD4", "CD8"]:
+        st.markdown(f"**{lineage}**")
+        lineage_filtered_summary = filtered_with_lineage[
+            filtered_with_lineage["cd_group"] == lineage
+        ].copy()
+        shared_summary_grid_rows = sorted(lineage_filtered_summary["organ_cell"].unique())
+        if lineage_filtered_summary.empty:
+            st.info(f"No {lineage} data available for the current filters.")
+            continue
+        mouse_ids = sorted(lineage_filtered_summary["mouse"].unique())
+        lineage_plotted = False
+        grid_columns = 2
+        for row_start in range(0, len(mouse_ids), grid_columns):
+            row_mouse_ids = mouse_ids[row_start : row_start + grid_columns]
+            row_cols = st.columns(grid_columns)
+            for col_idx, mouse_id in enumerate(row_mouse_ids):
+                with row_cols[col_idx]:
+                    mouse_df = lineage_filtered_summary[
+                        lineage_filtered_summary["mouse"] == mouse_id
+                    ].copy()
+                    mouse_reference_totals = (
+                        mouse_df[mouse_df["organ_cell"] == subset_selected]
+                        .groupby("clonotype", as_index=False)["abundance"]
+                        .sum()
+                        .sort_values(
+                            ["abundance", "clonotype"],
+                            ascending=[False, True],
+                            kind="mergesort",
+                        )
                     )
-                )
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=lower,
-                        mode="lines",
-                        line={"width": 0},
-                        fill="tonexty",
-                        fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
-                        if color.startswith("rgb(")
-                        else "rgba(31,119,180,0.18)"
-                        if lineage == "CD4"
-                        else "rgba(255,127,14,0.18)",
-                        hoverinfo="skip",
-                        showlegend=False,
-                        name=f"{lineage} CI",
+                    mouse_grid_clonotypes = (
+                        mouse_reference_totals.head(int(top_n))["clonotype"]
+                        .astype(str)
+                        .tolist()
                     )
-                )
-                summary_plot.add_trace(
-                    go.Scatter(
-                        x=x_values,
-                        y=mean,
-                        mode="lines+markers",
-                        name=f"{lineage} mean",
-                        line={"color": color, "width": 2},
-                        marker={"size": 7},
-                        customdata=lineage_stats[
-                            ["ci_low", "ci_high", "n_pairs"]
-                        ].to_numpy(),
-                        hovertemplate=(
-                            "Selection: %{x}<br>"
-                            "Mean correlation: %{y:.3f}<br>"
-                            "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
-                            "Pairs: %{customdata[2]}<extra>"
-                            + lineage
-                            + "</extra>"
-                        ),
+                    st.markdown(
+                        f"<div style='text-align:center;font-weight:700'>{mouse_id}</div>",
+                        unsafe_allow_html=True,
                     )
-                )
-                summary_plot.update_layout(
-                    height=420,
-                    title=f"{lineage} mean correlation across selections",
-                    yaxis_title="Correlation",
-                    xaxis_title="Organ/Cell selection",
-                    yaxis={"range": [-1, 1]},
-                    showlegend=False,
-                )
-                summary_plot.update_xaxes(
-                    categoryorder="array",
-                    categoryarray=lineage_axis_options,
-                )
-                st.plotly_chart(summary_plot, width="stretch")
+                    if not mouse_grid_clonotypes:
+                        st.info(
+                            f"No {lineage} top clonotypes available for {mouse_id} in {subset_selected}."
+                        )
+                        continue
+                    summary_grid_fig = build_clonotype_presence_grid_figure(
+                        df=mouse_df,
+                        selected_clonotypes=mouse_grid_clonotypes,
+                        top_n=int(top_n),
+                        selected_organ_cell=subset_selected,
+                        show_clonotype_sequences=show_clonotype_sequences_summary,
+                        row_categories=shared_summary_grid_rows,
+                    )
+                    if summary_grid_fig is None:
+                        st.info(f"No {lineage} clonotype presence grid available for {mouse_id}.")
+                        continue
+                    plotted_any_grid = True
+                    lineage_plotted = True
+                    st.plotly_chart(summary_grid_fig, width="stretch")
+                    render_plot_download_buttons(
+                        summary_grid_fig,
+                        base_filename=(
+                            f"clonotype_presence_grid_{lineage}_{mouse_id}_{subset_selected}"
+                        ).replace(" ", "_"),
+                        key_prefix=f"summary_grid_{lineage}_{mouse_id}",
+                    )
+        if not lineage_plotted:
+            st.info(f"No per-individual {lineage} clonotype presence grids available.")
+        if lineage == "CD4" and lineage_plotted:
+            render_clonotype_presence_grid_legend(int(top_n))
+
+    if not plotted_any_grid:
+        st.info("No per-individual clonotype presence grids available for the current filters.")
+    else:
+        render_clonotype_presence_grid_legend(int(top_n))
 
     display_count = max(10, top_n)
     st.subheader("Top clonotypes across individuals")

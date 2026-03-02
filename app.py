@@ -2,6 +2,7 @@ import io
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import re
 
 import networkx as nx
 import pandas as pd
@@ -49,8 +50,8 @@ def load_example_dataframe() -> pd.DataFrame:
     ]
     for path in example_path_candidates:
         if path.exists():
-            return pd.read_csv(path)
-    return pd.read_csv(io.StringIO(FALLBACK_EXAMPLE_CSV))
+            return pd.read_csv(path, low_memory=False)
+    return pd.read_csv(io.StringIO(FALLBACK_EXAMPLE_CSV), low_memory=False)
 
 
 def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -72,10 +73,10 @@ def validate_columns(df: pd.DataFrame) -> Tuple[bool, List[str]]:
 
 def classify_cd4_cd8(cell_type: str) -> str:
     upper = str(cell_type).upper()
-    if "CD4" in upper:
-        return "CD4"
-    if "CD8" in upper:
+    if re.search(r"\bCD8\b", upper):
         return "CD8"
+    if re.search(r"\bCD4\b", upper):
+        return "CD4"
     return "Other"
 
 
@@ -579,6 +580,67 @@ def prepare_summary_line_data(
     return lineage_plot, all_mice, organ_cells
 
 
+def calculate_mouse_cosine_similarity(
+    df: pd.DataFrame, value_col: str = "abundance"
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    if "clonotype_rank" not in df.columns:
+        return pd.DataFrame()
+    if value_col not in df.columns:
+        return pd.DataFrame()
+
+    feature_matrix = df.pivot_table(
+        index="mouse",
+        columns=["clonotype_rank", "organ_cell"],
+        values=value_col,
+        aggfunc="sum",
+        fill_value=0.0,
+    ).sort_index()
+
+    if feature_matrix.empty or feature_matrix.shape[0] < 2:
+        return pd.DataFrame()
+
+    feature_values = feature_matrix.to_numpy(dtype=float)
+    norms = np.linalg.norm(feature_values, axis=1, keepdims=True)
+    normalized = np.divide(
+        feature_values,
+        norms,
+        out=np.zeros_like(feature_values, dtype=float),
+        where=norms != 0,
+    )
+    similarity = normalized @ normalized.T
+    return pd.DataFrame(
+        similarity,
+        index=feature_matrix.index,
+        columns=feature_matrix.index,
+    )
+
+
+def calculate_mouse_correlation(
+    df: pd.DataFrame, value_col: str = "abundance"
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    if "clonotype_rank" not in df.columns:
+        return pd.DataFrame()
+    if value_col not in df.columns:
+        return pd.DataFrame()
+
+    feature_matrix = df.pivot_table(
+        index="mouse",
+        columns=["clonotype_rank", "organ_cell"],
+        values=value_col,
+        aggfunc="sum",
+        fill_value=0.0,
+    ).sort_index()
+
+    if feature_matrix.empty or feature_matrix.shape[0] < 2:
+        return pd.DataFrame()
+
+    return feature_matrix.T.corr(method="pearson")
+
+
 def load_dataset_from_sidebar() -> pd.DataFrame:
     with st.sidebar:
         st.header("Data")
@@ -600,7 +662,11 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
         st.stop()
 
     try:
-        df = load_example_dataframe() if use_example else pd.read_csv(data_source)
+        df = (
+            load_example_dataframe()
+            if use_example
+            else pd.read_csv(data_source, low_memory=False)
+        )
     except Exception as exc:
         st.error(f"Unable to read file: {exc}")
         st.stop()
@@ -729,7 +795,7 @@ def run_per_individual_page(df: pd.DataFrame):
     log_axis = st.checkbox(
         "Log10 scale",
         value=True,
-        help="Display % pool size on log10 axis and treat zero values as pseudo 10⁻⁴.",
+        help="Display % pool size on a log10 axis; zero values are shown using a small pseudo value for visibility.",
     )
     lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
     lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
@@ -967,7 +1033,7 @@ def run_per_individual_page(df: pd.DataFrame):
             if selected_metric_node:
                 st.caption(f"Highlighted node in network: {selected_metric_node}")
         with metric_actions[1]:
-            if st.button("Clear node highlight", use_container_width=True):
+            if st.button("Clear node highlight", width="stretch"):
                 st.session_state["network_metrics_selected_node"] = None
                 st.rerun()
 
@@ -1118,36 +1184,77 @@ def run_summary_all_page(df: pd.DataFrame):
         .sum()
         .sort_values(["mouse", "abundance"], ascending=False)
     )
-    #selected_clonotypes = clono_totals.groupby("mouse").head(top_n)["clonotype"].tolist()
-    selected_clonotypes = clono_totals.groupby("mouse").head(top_n)
-    
-    log_axis_summary = st.checkbox(
-        "Log10 scale",
-        value=True,
-        help="Display % of lineage pool on log10 axis and treat zero values as pseudo 10⁻⁴.",
+    selected_clonotypes = clono_totals.groupby("mouse").head(top_n).copy()
+    selected_clonotypes["clonotype_rank"] = (
+        selected_clonotypes.groupby("mouse").cumcount() + 1
     )
+    
+    scale_cols = st.columns(2)
+    with scale_cols[0]:
+        log_axis_summary = st.checkbox(
+            "Log10 scale",
+            value=True,
+            help=(
+                "Display values on a log10 axis. Missing clone values are shown with a "
+                "dynamic pseudo-0 per mouse and organ|cell: 0.5 x the lowest observed abundance."
+            ),
+        )
+    with scale_cols[1]:
+        normalize_topn_summary = st.checkbox(
+            "Normalize top-N per mouse to 100%",
+            value=False,
+            help="Normalize selected top-N clone abundances so each mouse sums to 100%.",
+        )
 
     # Grab top clones only
-    topClones = pd.merge(selected_clonotypes[["mouse","clonotype"]], filtered, how="left", on=["mouse","clonotype"])
+    topClones = pd.merge(
+        selected_clonotypes[["mouse", "clonotype", "clonotype_rank"]],
+        filtered,
+        how="left",
+        on=["mouse", "clonotype"],
+    )
 
     topClones["cd_group"] = topClones["cell_type"].apply(classify_cd4_cd8)
+    topClones["abundance_for_metric"] = topClones["abundance"].astype(float)
+    if normalize_topn_summary:
+        mouse_totals = topClones.groupby(["mouse","organ_cell"])["abundance_for_metric"].transform("sum")
+        topClones["abundance_for_metric"] = np.where(
+            mouse_totals > 0,
+            (topClones["abundance_for_metric"] / mouse_totals) * 100.0,
+            0.0,
+        )
+    y_axis_title = (
+        "Normalized abundance (%)" if normalize_topn_summary else "% Pool Size"
+    )
     
     if topClones.empty:
         st.info("No clonotypes available for the lineage plots.")
     else:
+        cosine_by_lineage: Dict[str, pd.DataFrame] = {}
+        correlation_by_lineage: Dict[str, pd.DataFrame] = {}
         for lineage in ["CD4", "CD8"]:
             lineage_df = topClones[topClones["cd_group"] == lineage].copy()
             st.markdown(f'**{lineage} clonotype abundance across organ/cell**')
             if lineage_df.empty:
                 st.info(f"No {lineage} subsets found for the current filter.")
                 continue
+            lineage_cosine = calculate_mouse_cosine_similarity(
+                lineage_df, value_col="abundance_for_metric"
+            )
+            lineage_correlation = calculate_mouse_correlation(
+                lineage_df, value_col="abundance_for_metric"
+            )
+            if not lineage_cosine.empty:
+                cosine_by_lineage[lineage] = lineage_cosine
+            if not lineage_correlation.empty:
+                correlation_by_lineage[lineage] = lineage_correlation
             lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
             # 1. Pivot (clonotypes x organ_cells) per individual!
             all_mice = lineage_df.mouse.unique()
             lineage_pivot = lineage_df.pivot_table(
                 index=["clonotype", "mouse"], 
                 columns=["organ_cell"], 
-                values="abundance", 
+                values="abundance_for_metric", 
                 aggfunc="sum",
                 fill_value=0
             ).reset_index()
@@ -1156,10 +1263,61 @@ def run_summary_all_page(df: pd.DataFrame):
                     id_vars=["clonotype","mouse"],
                     value_name="abundance"
             )
+            organ_cell_line["is_pseudo"] = False
             
             if log_axis_summary:
-                organ_cell_line["abundance"] = organ_cell_line["abundance"].where(
-                    organ_cell_line["abundance"] > 0, PSEUDO_ZERO
+                # Per mouse+organ_cell pseudo-zero:
+                # half of the lowest positive abundance observed for that lineage.
+                positive_lineage = lineage_df[lineage_df["abundance_for_metric"] > 0].copy()
+                pseudo_by_group = (
+                    positive_lineage.groupby(["mouse", "organ_cell"], as_index=False)[
+                        "abundance_for_metric"
+                    ]
+                    .min()
+                    .rename(columns={"abundance_for_metric": "pseudo_zero"})
+                )
+                pseudo_by_group["pseudo_zero"] = pseudo_by_group["pseudo_zero"] * 0.5
+                organ_cell_line = organ_cell_line.merge(
+                    pseudo_by_group,
+                    on=["mouse", "organ_cell"],
+                    how="left",
+                )
+
+                # Fallbacks when a specific mouse+organ_cell has no observed positive top-N value.
+                mouse_level_pseudo = (
+                    positive_lineage.groupby("mouse", as_index=False)["abundance_for_metric"]
+                    .min()
+                    .rename(columns={"abundance_for_metric": "mouse_pseudo_zero"})
+                )
+                mouse_level_pseudo["mouse_pseudo_zero"] = (
+                    mouse_level_pseudo["mouse_pseudo_zero"] * 0.5
+                )
+                organ_cell_line = organ_cell_line.merge(
+                    mouse_level_pseudo,
+                    on="mouse",
+                    how="left",
+                )
+                lineage_min_positive = (
+                    float(positive_lineage["abundance_for_metric"].min())
+                    if not positive_lineage.empty
+                    else np.nan
+                )
+                lineage_pseudo = (
+                    lineage_min_positive * 0.5
+                    if not np.isnan(lineage_min_positive)
+                    else float(np.finfo(float).tiny)
+                )
+                organ_cell_line["pseudo_zero"] = organ_cell_line["pseudo_zero"].fillna(
+                    organ_cell_line["mouse_pseudo_zero"]
+                )
+                organ_cell_line["pseudo_zero"] = organ_cell_line["pseudo_zero"].fillna(
+                    lineage_pseudo
+                )
+                organ_cell_line["is_pseudo"] = organ_cell_line["abundance"] <= 0
+                organ_cell_line["abundance"] = np.where(
+                    organ_cell_line["abundance"] > 0,
+                    organ_cell_line["abundance"],
+                    organ_cell_line["pseudo_zero"],
                 )
 
             cd_fig = px.line(
@@ -1172,7 +1330,7 @@ def run_summary_all_page(df: pd.DataFrame):
                 markers=True,
                 labels={
                     "organ_cell": "Organ/Cell",
-                    "abundance": "% Pool Size",
+                    "abundance": y_axis_title,
                     "mouse": "Individual",
                 },
                 title=f"{lineage} clonotype abundance across individuals",
@@ -1183,7 +1341,7 @@ def run_summary_all_page(df: pd.DataFrame):
                 },
             )
             yaxis_config = {
-                "title": "% Pool Size",
+                "title": y_axis_title,
                 "type": "log" if log_axis_summary else "linear",
             }
             if log_axis_summary:
@@ -1203,13 +1361,6 @@ def run_summary_all_page(df: pd.DataFrame):
                 yaxis=yaxis_config,
                 xaxis_title="Organ/Cell",
             )
-            if log_axis_summary:
-                cd_fig.add_hline(
-                    y=PSEUDO_ZERO,
-                    line_dash="dash",
-                    line_color="#888888",
-                    opacity=0.6,
-                )
 
 
             cd_fig.update_xaxes(
@@ -1222,12 +1373,397 @@ def run_summary_all_page(df: pd.DataFrame):
             )
 
             #cd_fig.update_xaxes(tickangle=-45)
+            pseudo_points = organ_cell_line[organ_cell_line["is_pseudo"]].copy()
+            if not pseudo_points.empty:
+                cd_fig.add_trace(
+                    go.Scatter(
+                        x=pseudo_points["organ_cell"],
+                        y=pseudo_points["abundance"],
+                        mode="markers",
+                        marker={
+                            "symbol": "circle-open",
+                            "size": 11,
+                            "color": "#222222",
+                            "line": {"width": 1.5, "color": "#222222"},
+                        },
+                        name="Pseudo-0",
+                        showlegend=True,
+                        customdata=pseudo_points[["mouse", "clonotype"]].to_numpy(),
+                        hovertemplate=(
+                            "Organ/Cell: %{x}<br>"
+                            "Value: %{y:.4g}<br>"
+                            "Mouse: %{customdata[0]}<br>"
+                            "Clonotype: %{customdata[1]}<br>"
+                            "Imputed from pseudo-0<extra></extra>"
+                        ),
+                    )
+                )
             st.plotly_chart(cd_fig, width="stretch")
+
+        st.subheader("Cosine Similarity Across Individuals (Top Clones)")
+        st.caption(
+            "Cosine similarity is rank-based: each individual's vector uses "
+            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
+        )
+        if not cosine_by_lineage:
+            st.info("At least two individuals with non-empty vectors are required to compute cosine similarity.")
+        else:
+            for lineage, similarity_df in cosine_by_lineage.items():
+                st.markdown(f"**{lineage} cosine matrix**")
+                heatmap_fig = px.imshow(
+                    similarity_df,
+                    zmin=0,
+                    zmax=1,
+                    color_continuous_scale="Blues",
+                    text_auto=".2f",
+                    labels={"x": "Individual", "y": "Individual", "color": "Cosine similarity"},
+                )
+                heatmap_fig.update_layout(height=420)
+                st.plotly_chart(heatmap_fig, width="stretch")
+                st.dataframe(similarity_df.round(4), width="stretch")
+
+        st.subheader("Correlation Across Individuals (Top Clones)")
+        st.caption(
+            "Pearson correlation is rank-based: each individual's vector uses "
+            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
+        )
+        if not correlation_by_lineage:
+            st.info("At least two individuals with non-empty vectors are required to compute correlation.")
+        else:
+            for lineage, similarity_df in correlation_by_lineage.items():
+                st.markdown(f"**{lineage} correlation matrix**")
+                heatmap_fig = px.imshow(
+                    similarity_df,
+                    zmin=-1,
+                    zmax=1,
+                    color_continuous_scale="Blues",
+                    text_auto=".2f",
+                    labels={"x": "Individual", "y": "Individual", "color": "Correlation"},
+                )
+                heatmap_fig.update_layout(height=420)
+                st.plotly_chart(heatmap_fig, width="stretch")
+                st.dataframe(similarity_df.round(4), width="stretch")
+
+        st.subheader("Cosine Similarity Across Individuals (All Organ/Cell Selections)")
+        st.caption(
+            "Single summary plot across all organ/cell selections. "
+            "Lines show mean pairwise mouse cosine similarity; shaded bands show 95% confidence ranges."
+        )
+        all_selection_cosine_records: List[Dict[str, object]] = []
+
+        st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
+        st.caption(
+            "Single summary plot across all organ/cell selections. "
+            "Lines show mean pairwise mouse correlation; shaded bands show 95% confidence ranges."
+        )
+        all_selection_correlation_records: List[Dict[str, object]] = []
+        for subset_option in organ_cell_options:
+            subset_totals = (
+                filtered[filtered["organ_cell"] == subset_option]
+                .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
+                .sum()
+                .sort_values(["mouse", "abundance"], ascending=False)
+            )
+            if subset_totals.empty:
+                continue
+
+            subset_max_clonotypes = max(
+                1,
+                int(
+                    filtered[filtered["organ_cell"] == subset_option]["clonotype"].nunique()
+                ),
+            )
+            subset_top_n = min(int(top_n), subset_max_clonotypes)
+
+            subset_ranked = subset_totals.groupby("mouse").head(subset_top_n).copy()
+            subset_ranked["clonotype_rank"] = (
+                subset_ranked.groupby("mouse").cumcount() + 1
+            )
+            subset_top_clones = pd.merge(
+                subset_ranked[["mouse", "clonotype", "clonotype_rank"]],
+                filtered,
+                how="left",
+                on=["mouse", "clonotype"],
+            )
+            subset_top_clones["cd_group"] = subset_top_clones["cell_type"].apply(
+                classify_cd4_cd8
+            )
+            subset_top_clones["abundance_for_metric"] = subset_top_clones[
+                "abundance"
+            ].astype(float)
+            if normalize_topn_summary:
+                subset_mouse_totals = subset_top_clones.groupby(
+                    ["mouse", "organ_cell"]
+                )["abundance_for_metric"].transform("sum")
+                subset_top_clones["abundance_for_metric"] = np.where(
+                    subset_mouse_totals > 0,
+                    (subset_top_clones["abundance_for_metric"] / subset_mouse_totals)
+                    * 100.0,
+                    0.0,
+                )
+            for lineage in ["CD4", "CD8"]:
+                subset_lineage_df = subset_top_clones[
+                    subset_top_clones["cd_group"] == lineage
+                ].copy()
+                subset_cosine = calculate_mouse_cosine_similarity(
+                    subset_lineage_df, value_col="abundance_for_metric"
+                )
+                if not subset_cosine.empty:
+                    cos_values = subset_cosine.to_numpy(dtype=float)
+                    if cos_values.shape[0] >= 2:
+                        cos_pairwise = cos_values[np.triu_indices(cos_values.shape[0], k=1)]
+                        cos_pairwise = cos_pairwise[~np.isnan(cos_pairwise)]
+                        if cos_pairwise.size > 0:
+                            mean_cosine = float(np.mean(cos_pairwise))
+                            if cos_pairwise.size > 1:
+                                std_cosine = float(np.std(cos_pairwise, ddof=1))
+                                cos_se = std_cosine / math.sqrt(cos_pairwise.size)
+                                cos_ci_radius = 1.96 * cos_se
+                            else:
+                                cos_ci_radius = 0.0
+                            all_selection_cosine_records.append(
+                                {
+                                    "organ_cell": subset_option,
+                                    "lineage": lineage,
+                                    "mean_cosine": mean_cosine,
+                                    "ci_low": max(0.0, mean_cosine - cos_ci_radius),
+                                    "ci_high": min(1.0, mean_cosine + cos_ci_radius),
+                                    "n_pairs": int(cos_pairwise.size),
+                                }
+                            )
+
+                subset_correlation = calculate_mouse_correlation(
+                    subset_lineage_df, value_col="abundance_for_metric"
+                )
+                if not subset_correlation.empty:
+                    corr_values = subset_correlation.to_numpy(dtype=float)
+                    if corr_values.shape[0] >= 2:
+                        corr_pairwise = corr_values[np.triu_indices(corr_values.shape[0], k=1)]
+                        corr_pairwise = corr_pairwise[~np.isnan(corr_pairwise)]
+                        if corr_pairwise.size > 0:
+                            mean_correlation = float(np.mean(corr_pairwise))
+                            if corr_pairwise.size > 1:
+                                std_correlation = float(np.std(corr_pairwise, ddof=1))
+                                corr_se = std_correlation / math.sqrt(corr_pairwise.size)
+                                corr_ci_radius = 1.96 * corr_se
+                            else:
+                                corr_ci_radius = 0.0
+                            all_selection_correlation_records.append(
+                                {
+                                    "organ_cell": subset_option,
+                                    "lineage": lineage,
+                                    "mean_correlation": mean_correlation,
+                                    "ci_low": max(-1.0, mean_correlation - corr_ci_radius),
+                                    "ci_high": min(1.0, mean_correlation + corr_ci_radius),
+                                    "n_pairs": int(corr_pairwise.size),
+                                }
+                            )
+
+        filtered_with_lineage = filtered.copy()
+        filtered_with_lineage["cd_group"] = filtered_with_lineage["cell_type"].apply(
+            classify_cd4_cd8
+        )
+        lineage_colors = {"CD4": "#1f77b4", "CD8": "#ff7f0e"}
+
+        if not all_selection_cosine_records:
+            st.info(
+                "No all-selection cosine matrices could be computed with the current filters."
+            )
+        else:
+            cosine_summary_df = pd.DataFrame(all_selection_cosine_records)
+            for lineage in ["CD4", "CD8"]:
+                lineage_axis_options = sorted(
+                    filtered_with_lineage[
+                        filtered_with_lineage["cd_group"] == lineage
+                    ]["organ_cell"].unique()
+                )
+                if not lineage_axis_options:
+                    continue
+                lineage_stats = cosine_summary_df[
+                    cosine_summary_df["lineage"] == lineage
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                summary_plot = go.Figure()
+                lineage_stats = lineage_stats[
+                    lineage_stats["organ_cell"].isin(lineage_axis_options)
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                lineage_stats["organ_cell"] = pd.Categorical(
+                    lineage_stats["organ_cell"],
+                    categories=lineage_axis_options,
+                    ordered=True,
+                )
+                lineage_stats = lineage_stats.sort_values("organ_cell")
+                x_values = lineage_stats["organ_cell"].astype(str).tolist()
+                lower = lineage_stats["ci_low"].tolist()
+                upper = lineage_stats["ci_high"].tolist()
+                mean = lineage_stats["mean_cosine"].tolist()
+                color = lineage_colors.get(lineage, "#444444")
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=upper,
+                        mode="lines",
+                        line={"width": 0},
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=lower,
+                        mode="lines",
+                        line={"width": 0},
+                        fill="tonexty",
+                        fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
+                        if color.startswith("rgb(")
+                        else "rgba(31,119,180,0.18)"
+                        if lineage == "CD4"
+                        else "rgba(255,127,14,0.18)",
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=mean,
+                        mode="lines+markers",
+                        line={"color": color, "width": 2},
+                        marker={"size": 7},
+                        customdata=lineage_stats[
+                            ["ci_low", "ci_high", "n_pairs"]
+                        ].to_numpy(),
+                        hovertemplate=(
+                            "Selection: %{x}<br>"
+                            "Mean cosine: %{y:.3f}<br>"
+                            "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
+                            "Pairs: %{customdata[2]}<extra>"
+                            + lineage
+                            + "</extra>"
+                        ),
+                    )
+                )
+                summary_plot.update_layout(
+                    height=420,
+                    title=f"{lineage} mean cosine similarity across selections",
+                    yaxis_title="Cosine similarity",
+                    xaxis_title="Organ/Cell selection",
+                    yaxis={"range": [0, 1]},
+                    showlegend=False,
+                )
+                summary_plot.update_xaxes(
+                    categoryorder="array",
+                    categoryarray=lineage_axis_options,
+                )
+                st.plotly_chart(summary_plot, width="stretch")
+
+        if not all_selection_correlation_records:
+            st.info(
+                "No all-selection correlation matrices could be computed with the current filters."
+            )
+        else:
+            correlation_summary_df = pd.DataFrame(all_selection_correlation_records)
+            for lineage in ["CD4", "CD8"]:
+                lineage_axis_options = sorted(
+                    filtered_with_lineage[
+                        filtered_with_lineage["cd_group"] == lineage
+                    ]["organ_cell"].unique()
+                )
+                if not lineage_axis_options:
+                    continue
+                lineage_stats = correlation_summary_df[
+                    correlation_summary_df["lineage"] == lineage
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                summary_plot = go.Figure()
+                lineage_stats = lineage_stats[
+                    lineage_stats["organ_cell"].isin(lineage_axis_options)
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                lineage_stats["organ_cell"] = pd.Categorical(
+                    lineage_stats["organ_cell"],
+                    categories=lineage_axis_options,
+                    ordered=True,
+                )
+                lineage_stats = lineage_stats.sort_values("organ_cell")
+                x_values = lineage_stats["organ_cell"].astype(str).tolist()
+                lower = lineage_stats["ci_low"].tolist()
+                upper = lineage_stats["ci_high"].tolist()
+                mean = lineage_stats["mean_correlation"].tolist()
+                color = lineage_colors.get(lineage, "#444444")
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=upper,
+                        mode="lines",
+                        line={"width": 0},
+                        hoverinfo="skip",
+                        showlegend=False,
+                        name=f"{lineage} upper",
+                    )
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=lower,
+                        mode="lines",
+                        line={"width": 0},
+                        fill="tonexty",
+                        fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
+                        if color.startswith("rgb(")
+                        else "rgba(31,119,180,0.18)"
+                        if lineage == "CD4"
+                        else "rgba(255,127,14,0.18)",
+                        hoverinfo="skip",
+                        showlegend=False,
+                        name=f"{lineage} CI",
+                    )
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=mean,
+                        mode="lines+markers",
+                        name=f"{lineage} mean",
+                        line={"color": color, "width": 2},
+                        marker={"size": 7},
+                        customdata=lineage_stats[
+                            ["ci_low", "ci_high", "n_pairs"]
+                        ].to_numpy(),
+                        hovertemplate=(
+                            "Selection: %{x}<br>"
+                            "Mean correlation: %{y:.3f}<br>"
+                            "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
+                            "Pairs: %{customdata[2]}<extra>"
+                            + lineage
+                            + "</extra>"
+                        ),
+                    )
+                )
+                summary_plot.update_layout(
+                    height=420,
+                    title=f"{lineage} mean correlation across selections",
+                    yaxis_title="Correlation",
+                    xaxis_title="Organ/Cell selection",
+                    yaxis={"range": [-1, 1]},
+                    showlegend=False,
+                )
+                summary_plot.update_xaxes(
+                    categoryorder="array",
+                    categoryarray=lineage_axis_options,
+                )
+                st.plotly_chart(summary_plot, width="stretch")
 
     display_count = max(10, top_n)
     st.subheader("Top clonotypes across individuals")
     st.caption("Sorted by total abundance for the selected subset across all mice.")
-    st.dataframe(topClones, use_container_width=True)
+    st.dataframe(topClones, width="stretch")
 
 
 def main():

@@ -392,14 +392,23 @@ def build_stacked_clonotype_band_figure(
     selected_organ_cell: str,
     lineage_label: str,
     clonotype_color_map: Dict[str, str],
+    aggregate_non_selected: bool = False,
+    non_selected_label: str = "Other clonotypes",
 ) -> Optional[go.Figure]:
     if lineage_df.empty:
         return None
 
+    lineage_df = lineage_df.copy()
+    lineage_df["clonotype"] = lineage_df["clonotype"].astype(str)
     lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
     if not lineage_organ_cells:
         return None
 
+    all_clonotypes = (
+        lineage_df.groupby("clonotype", as_index=False)["abundance"]
+        .sum()
+        .sort_values(["abundance", "clonotype"], ascending=[False, True], kind="mergesort")
+    )["clonotype"].astype(str).tolist()
     lineage_pivot = (
         lineage_df.pivot_table(
             index="clonotype",
@@ -408,27 +417,50 @@ def build_stacked_clonotype_band_figure(
             aggfunc="sum",
             fill_value=0.0,
         )
-        .reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0.0)
+        .reindex(index=all_clonotypes, columns=lineage_organ_cells, fill_value=0.0)
         .astype(float)
     )
     lineage_pool_size = float(lineage_df["abundance"].sum())
-    if lineage_pool_size > 0:
-        lineage_pivot = (lineage_pivot / lineage_pool_size) * 100.0
+    #print(lineage_pool_size)
+    #if lineage_pool_size > 0:
+    #lineage_pivot = (lineage_pivot / lineage_pool_size) * 100.0
 
-    active_clonotypes = [
+    selected_set = {str(clonotype) for clonotype in selected_clonotypes}
+    active_all_clonotypes = [
         clonotype
-        for clonotype in selected_clonotypes
+        for clonotype in all_clonotypes
         if clonotype in lineage_pivot.index and float(lineage_pivot.loc[clonotype].sum()) > 0
     ]
-    if not active_clonotypes:
+    if not active_all_clonotypes:
         return None
+    selected_active_clonotypes = [
+        clonotype for clonotype in active_all_clonotypes if clonotype in selected_set
+    ]
+
+    if aggregate_non_selected:
+        non_selected_clonotypes = [
+            clonotype for clonotype in active_all_clonotypes if clonotype not in selected_set
+        ]
+        bar_clonotypes = selected_active_clonotypes.copy()
+        if non_selected_clonotypes:
+            bar_clonotypes.append(non_selected_label)
+    else:
+        bar_clonotypes = [
+            clonotype for clonotype in selected_clonotypes if clonotype in active_all_clonotypes
+        ]
+        if not bar_clonotypes:
+            return None
 
     x_values = list(range(len(lineage_organ_cells)))
-    bar_half_width = 0.32
     cumulative = np.zeros(len(lineage_organ_cells), dtype=float)
     segment_bounds: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    for clonotype in active_clonotypes:
-        y_vals = lineage_pivot.loc[clonotype].to_numpy(dtype=float)
+    for clonotype in bar_clonotypes:
+        if aggregate_non_selected and clonotype == non_selected_label:
+            y_vals = np.zeros(len(lineage_organ_cells), dtype=float)
+            for other_clonotype in non_selected_clonotypes:
+                y_vals = y_vals + lineage_pivot.loc[other_clonotype].to_numpy(dtype=float)
+        else:
+            y_vals = lineage_pivot.loc[clonotype].to_numpy(dtype=float)
         lower = cumulative.copy()
         upper = lower + y_vals
         segment_bounds[clonotype] = (lower, upper, y_vals)
@@ -438,42 +470,62 @@ def build_stacked_clonotype_band_figure(
     bar_width = 0.62
     bar_half_width = bar_width / 2.0
 
-    for clonotype in active_clonotypes:
+    for clonotype in selected_active_clonotypes:
+        if clonotype not in segment_bounds:
+            continue
         lower, upper, y_vals = segment_bounds[clonotype]
-        band_color = _hex_to_rgba(clonotype_color_map[clonotype], 0.23)
+        band_color = _hex_to_rgba(clonotype_color_map.get(clonotype, "#444444"), 0.23)
+        polygon_x: List[float] = []
+        polygon_y: List[float] = []
         for idx in range(len(x_values) - 1):
             if y_vals[idx] <= 0 and y_vals[idx + 1] <= 0:
                 continue
             left_x = x_values[idx] + bar_half_width
             right_x = x_values[idx + 1] - bar_half_width
+            polygon_x.extend([left_x, right_x, right_x, left_x, left_x, None])
+            polygon_y.extend(
+                [
+                    lower[idx],
+                    lower[idx + 1],
+                    upper[idx + 1],
+                    upper[idx],
+                    lower[idx],
+                    None,
+                ]
+            )
+        if polygon_x:
             flow_fig.add_trace(
                 go.Scatter(
-                    x=[left_x, right_x, right_x, left_x, left_x],
-                    y=[
-                        lower[idx],
-                        lower[idx + 1],
-                        upper[idx + 1],
-                        upper[idx],
-                        lower[idx],
-                    ],
+                    x=polygon_x,
+                    y=polygon_y,
                     mode="lines",
                     line={"width": 0},
                     fill="toself",
                     fillcolor=band_color,
                     hoverinfo="skip",
                     showlegend=False,
+                    legendgroup=clonotype,
                 )
             )
 
-    for clonotype in active_clonotypes:
+    for clonotype in bar_clonotypes:
         _, _, y_vals = segment_bounds[clonotype]
+        is_selected = clonotype in selected_set or (not aggregate_non_selected)
+        marker_color = (
+            clonotype_color_map.get(clonotype, "#444444")
+            if is_selected and clonotype != non_selected_label
+            else "#d9d9d9"
+        )
         flow_fig.add_trace(
             go.Bar(
                 x=x_values,
                 y=y_vals,
                 width=[bar_width] * len(x_values),
                 name=clonotype,
-                marker={"color": clonotype_color_map[clonotype]},
+                marker={"color": marker_color},
+                opacity=1.0 if (is_selected and clonotype != non_selected_label) else 0.7,
+                legendgroup=clonotype,
+                showlegend=(clonotype in selected_set) or (clonotype == non_selected_label),
                 hovertemplate=(
                     "Organ/Cell: %{customdata[0]}<br>"
                     "Clonotype: %{fullData.name}<br>"
@@ -491,6 +543,7 @@ def build_stacked_clonotype_band_figure(
         xaxis_title="Organ/Cell",
         yaxis_title="% Pool Size",
         legend_title="Clonotype",
+        legend={"groupclick": "togglegroup"},
     )
     flow_fig.update_xaxes(
         tickmode="array",
@@ -1091,6 +1144,10 @@ def run_per_individual_page(df: pd.DataFrame):
         .sum()
         .sort_values(["abundance", "clonotype"], ascending=[False, True], kind="mergesort")
     )
+    filtered["norm_topN"] = (
+        filtered.groupby("organ_cell")["abundance"]
+        .transform(lambda x: x.nlargest(int(top_n)).sum())
+    )
     selected_clonotypes = clono_totals.head(top_n)["clonotype"].tolist()
     heatmap_df = (
         filtered[filtered["clonotype"].isin(selected_clonotypes)]
@@ -1122,19 +1179,33 @@ def run_per_individual_page(df: pd.DataFrame):
     st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
     st.caption(
         "Separate line plots for CD4 and CD8 cells so each lineage can be compared independently. "
-        "Y-axis shows percent of the lineage pool size; toggle the log option if needed."
+        "Y-axis shows raw abundance by default; enable top-N normalization if needed."
     )
-    log_axis = st.checkbox(
-        "Log10 scale",
-        value=True,
-        help=(
-            "Display % pool size on a log10 axis. Missing clone values are shown with a "
-            "dynamic pseudo-0 per organ|cell: 0.5 x the lowest observed abundance."
-        ),
+    scale_cols = st.columns(2)
+    with scale_cols[0]:
+        log_axis = st.checkbox(
+            "Log10 scale",
+            value=True,
+            help=(
+                "Display values on a log10 axis. Missing clone values are shown with a "
+                "dynamic pseudo-0 per organ|cell"
+            ),
+        )
+    with scale_cols[1]:
+        normalize_topn_individual = st.checkbox(
+            f"Normalize by organ/cell top-{int(top_n)} denominator",
+            value=False,
+            help=(
+                f"For each organ/cell group, divide abundance by that group's sum of the "
+                f"top-{int(top_n)} abundances (within the current mouse), then multiply by 100."
+            ),
+        )
+    y_axis_title = (
+        "Normalized % Pool Size" if normalize_topn_individual else "% Pool Size"
     )
     if log_axis:
         st.caption(
-            "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0 used for Log10 display)."
+            "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0)."
         )
     lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
     lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
@@ -1145,13 +1216,20 @@ def run_per_individual_page(df: pd.DataFrame):
         if lineage_df.empty:
             st.info(f"No {lineage} cells found for current filters.")
             continue
+        lineage_df["abundance_for_metric"] = lineage_df["abundance"].astype(float)
+        if normalize_topn_individual:
+            lineage_df["abundance_for_metric"] = np.where(
+                lineage_df["norm_topN"] > 0,
+                (lineage_df["abundance_for_metric"] / lineage_df["norm_topN"]) * 100.0,
+                0.0,
+            )
         lineage_organ_cells = sorted(lineage_df["organ_cell"].unique())
         # 1. Pivot to create the grid automatically (clonotypes x organ_cells)
         # This handles the "missing" combinations by filling them with 0 immediately
         lineage_pivot = lineage_df.pivot_table(
             index="clonotype", 
             columns="organ_cell", 
-            values="abundance", 
+            values="abundance_for_metric",
             aggfunc="sum", 
             fill_value=0
         ).reindex(index=selected_clonotypes, columns=lineage_organ_cells, fill_value=0)
@@ -1161,13 +1239,7 @@ def run_per_individual_page(df: pd.DataFrame):
             value_name="abundance"
         )
         organ_cell_line["is_pseudo"] = False
-        lineage_pool_size = float(lineage_df["abundance"].sum())
-        if lineage_pool_size > 0:
-            organ_cell_line["pool_pct"] = (
-                organ_cell_line["abundance"] / lineage_pool_size * 100.0
-            )
-        else:
-            organ_cell_line["pool_pct"] = 0.0
+        organ_cell_line["pool_pct"] = organ_cell_line["abundance"].astype(float)
         organ_cell_line["pool_pct_plot"] = organ_cell_line["pool_pct"]
         if log_axis:
             positive_lineage = organ_cell_line[organ_cell_line["pool_pct"] > 0].copy()
@@ -1176,7 +1248,7 @@ def run_per_individual_page(df: pd.DataFrame):
                 .min()
                 .rename(columns={"pool_pct": "pseudo_zero"})
             )
-            pseudo_by_group["pseudo_zero"] = pseudo_by_group["pseudo_zero"] * 0.5
+            pseudo_by_group["pseudo_zero"] = (pseudo_by_group["pseudo_zero"]) / (pseudo_by_group["pseudo_zero"]+1)
             organ_cell_line = organ_cell_line.merge(
                 pseudo_by_group,
                 on="organ_cell",
@@ -1188,7 +1260,7 @@ def run_per_individual_page(df: pd.DataFrame):
                 else np.nan
             )
             lineage_pseudo = (
-                lineage_min_positive * 0.5
+                lineage_min_positive / (lineage_min_positive+1)
                 if not np.isnan(lineage_min_positive)
                 else float(np.finfo(float).tiny)
             )
@@ -1208,26 +1280,12 @@ def run_per_individual_page(df: pd.DataFrame):
             color="clonotype",
             markers=True,
             color_discrete_map=clonotype_color_map,
-            labels={"organ_cell": "Organ/Cell", "pool_pct_plot": "% Pool Size"},
+            labels={"organ_cell": "Organ/Cell", "pool_pct_plot": y_axis_title},
         )
         yaxis_config = {
-            "title": "% Pool Size",
+            "title": y_axis_title,
             "type": "log" if log_axis else "linear",
         }
-        if log_axis:
-            tick_exponents = list(range(-5, 3))
-            yaxis_config.update(
-                {
-                    "tickvals": [10 ** exp for exp in tick_exponents],
-                    "ticktext": [
-                        "0" if exp == -5 else f"10{superscript(exp)}"
-                        for exp in tick_exponents
-                    ],
-                    "range": [tick_exponents[0], tick_exponents[-1]],
-                }
-            )
-        else:
-            yaxis_config.setdefault("range", [0, 100])
         line_fig.update_layout(height=420, yaxis=yaxis_config)
         line_fig.update_xaxes(
             tickmode="array",
@@ -1662,11 +1720,11 @@ def run_summary_all_page(df: pd.DataFrame):
     # Count top n clonotypes per mouse
     clono_totals = (
         filtered[filtered["organ_cell"] == subset_selected]
-        .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
-        .sum()
+        #.groupby(["mouse"], as_index=False)["abundance"]
+        #.sum()
         .sort_values(
-            ["mouse", "abundance", "clonotype"],
-            ascending=[True, False, True],
+            ["mouse", "abundance"],
+            ascending=[True, False],
             kind="mergesort",
         )
     )
@@ -1682,40 +1740,47 @@ def run_summary_all_page(df: pd.DataFrame):
             value=True,
             help=(
                 "Display values on a log10 axis. Missing clone values are shown with a "
-                "dynamic pseudo-0 per mouse and organ|cell: 0.5 x the lowest observed abundance."
+                "dynamic pseudo-0 per mouse and organ|cell"
             ),
         )
     with scale_cols[1]:
         normalize_topn_summary = st.checkbox(
-            f"Normalize top-{int(top_n)} per mouse to 100%",
+            f"Normalize by mouse+organ/cell top-{int(top_n)} denominator",
             value=False,
             help=(
-                f"Normalize selected top-{int(top_n)} clone abundances so each mouse sums to 100%."
+                f"For each mouse and organ/cell group, divide abundance by that group's sum "
+                f"of the top-{int(top_n)} abundances, then multiply by 100."
             ),
         )
     if log_axis_summary:
         st.caption(
             "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0 used for Log10 display)."
         )
-    # Grab top clones only
+
+ 
+    # Calculate normalization factor per organ|cell
+    filtered["norm_topN"] = (
+            filtered.groupby(["mouse", "organ_cell"])["abundance"]
+            .transform(lambda x: x.nlargest(top_n).sum())
+            )
+    # Grab top clones' occurance in other organ|cells 
     topClones = pd.merge(
         selected_clonotypes[["mouse", "clonotype", "clonotype_rank"]],
         filtered,
         how="left",
         on=["mouse", "clonotype"],
     )
-
+    
     topClones["cd_group"] = topClones["cell_type"].apply(classify_cd4_cd8)
     topClones["abundance_for_metric"] = topClones["abundance"].astype(float)
     if normalize_topn_summary:
-        mouse_totals = topClones.groupby(["mouse","organ_cell"])["abundance_for_metric"].transform("sum")
         topClones["abundance_for_metric"] = np.where(
-            mouse_totals > 0,
-            (topClones["abundance_for_metric"] / mouse_totals) * 100.0,
+            topClones["norm_topN"] > 0,
+            (topClones["abundance_for_metric"] / topClones["norm_topN"]) * 100.0,
             0.0,
         )
     y_axis_title = (
-        "Normalized abundance (%)" if normalize_topn_summary else "% Pool Size"
+        "Normalized % Pool Size" if normalize_topn_summary else "% Pool Size"
     )
     
     if topClones.empty:
@@ -1767,7 +1832,7 @@ def run_summary_all_page(df: pd.DataFrame):
                     .min()
                     .rename(columns={"abundance_for_metric": "pseudo_zero"})
                 )
-                pseudo_by_group["pseudo_zero"] = pseudo_by_group["pseudo_zero"] * 0.5
+                pseudo_by_group["pseudo_zero"] = pseudo_by_group["pseudo_zero"] / (pseudo_by_group["pseudo_zero"]+1)
                 organ_cell_line = organ_cell_line.merge(
                     pseudo_by_group,
                     on=["mouse", "organ_cell"],
@@ -1781,7 +1846,7 @@ def run_summary_all_page(df: pd.DataFrame):
                     .rename(columns={"abundance_for_metric": "mouse_pseudo_zero"})
                 )
                 mouse_level_pseudo["mouse_pseudo_zero"] = (
-                    mouse_level_pseudo["mouse_pseudo_zero"] * 0.5
+                    mouse_level_pseudo["mouse_pseudo_zero"] / (mouse_level_pseudo["mouse_pseudo_zero"]+1)
                 )
                 organ_cell_line = organ_cell_line.merge(
                     mouse_level_pseudo,
@@ -1794,7 +1859,7 @@ def run_summary_all_page(df: pd.DataFrame):
                     else np.nan
                 )
                 lineage_pseudo = (
-                    lineage_min_positive * 0.5
+                    lineage_min_positive / (lineage_min_positive+1)
                     if not np.isnan(lineage_min_positive)
                     else float(np.finfo(float).tiny)
                 )
@@ -2362,21 +2427,149 @@ def run_summary_all_page(df: pd.DataFrame):
     st.dataframe(topClones, width="stretch")
 
 
+def run_all_clonotype_flow_page(df: pd.DataFrame):
+    st.title("TCR Abundance Explorer")
+    st.subheader("Top-N flow per individual")
+    st.markdown(
+        """
+    Per selected mouse, this page shows stacked clonotype abundance flow across organ|cell groups.
+    CD4 and CD8 are displayed in separate plots. For each organ|cell, top-N clonotypes are selected,
+    and the plot shows how those selected clonotypes flow across organ|cell groups.
+    """
+    )
+
+    with st.sidebar:
+        st.header("Flow filters")
+        chain_selected = st.selectbox("Chain", sorted(df["chain"].unique()))
+        organ_selected = st.multiselect(
+            "Organ",
+            sorted(df["organ"].unique()),
+            default=sorted(df["organ"].unique()),
+        )
+        cell_selected = st.multiselect(
+            "Cell type",
+            sorted(df["cell_type"].unique()),
+            default=sorted(df["cell_type"].unique()),
+        )
+        top_n = st.number_input(
+            "Top N clonotypes per organ|cell",
+            min_value=1,
+            max_value=500,
+            value=10,
+            step=1,
+            help=(
+                "For each mouse and lineage, select top N clonotypes within every organ|cell, "
+                "then show the union of those clonotypes in the flow plot."
+            ),
+        )
+
+    filtered = df[
+        (df["chain"] == chain_selected)
+        & (df["organ"].isin(organ_selected))
+        & (df["cell_type"].isin(cell_selected))
+    ].copy()
+
+    if filtered.empty:
+        st.warning("No data match the selected filters.")
+        st.stop()
+
+    available_mice = sorted(filtered["mouse"].unique())
+    selected_mice = st.multiselect(
+        "Individuals (mice) to display",
+        options=available_mice,
+        default=available_mice[: min(len(available_mice), 4)],
+        help="Each selected mouse renders separate CD4 and CD8 flow plots using all clonotypes.",
+    )
+    if not selected_mice:
+        st.info("Select at least one mouse to render flow plots.")
+        st.stop()
+
+    filtered = filtered[filtered["mouse"].isin(selected_mice)].copy()
+    filtered["cd_group"] = filtered["cell_type"].apply(classify_cd4_cd8)
+
+    st.caption(
+        f"Within each mouse and lineage, stacked bars show top-flow clonotypes individually plus one aggregated 'Other clonotypes' bar segment. Only per-row top {int(top_n)} clonotypes are highlighted with color and flow bands."
+    )
+
+    for mouse_id in selected_mice:
+        mouse_df = filtered[filtered["mouse"] == mouse_id].copy()
+        st.markdown(f"### {mouse_id}")
+        if mouse_df.empty:
+            st.info(f"No data available for {mouse_id} under current filters.")
+            continue
+
+        mouse_metrics = st.columns(4)
+        mouse_metrics[0].metric("Clonotypes", int(mouse_df["clonotype"].nunique()))
+        mouse_metrics[1].metric("Organs", int(mouse_df["organ"].nunique()))
+        mouse_metrics[2].metric("Cell types", int(mouse_df["cell_type"].nunique()))
+        mouse_metrics[3].metric("Organ|cell groups", int(mouse_df["organ_cell"].nunique()))
+
+        for lineage in ["CD4", "CD8"]:
+            lineage_df = mouse_df[mouse_df["cd_group"] == lineage].copy()
+            st.markdown(f"**{lineage} all-clonotype stacked abundance flow**")
+            if lineage_df.empty:
+                st.info(f"No {lineage} cells found for {mouse_id}.")
+                continue
+
+            per_row_ranked = (
+                lineage_df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
+                .sum()
+                .sort_values(
+                    ["organ_cell", "abundance", "clonotype"],
+                    ascending=[True, False, True],
+                    kind="mergesort",
+                )
+            )
+            lineage_topn_df = per_row_ranked.groupby("organ_cell").head(int(top_n)).copy()
+            lineage_flow_candidates = (
+                lineage_topn_df
+                .groupby("clonotype", as_index=False)["abundance"]
+                .sum()
+                .sort_values(["abundance", "clonotype"], ascending=[False, True], kind="mergesort")
+            )["clonotype"].astype(str).tolist()
+            lineage_clonotypes = lineage_flow_candidates[: int(top_n)]
+            st.caption(
+                f"{lineage}: showing top {len(lineage_clonotypes)} highlighted clonotypes (from per-organ|cell top-{int(top_n)} candidates); remaining clonotypes are aggregated as 'Other clonotypes'."
+            )
+            if not lineage_clonotypes:
+                st.info(f"No {lineage} clonotypes available after top-{int(top_n)} row filtering.")
+                continue
+            clonotype_color_map = build_clonotype_color_map(lineage_clonotypes)
+            stacked_flow_fig = build_stacked_clonotype_band_figure(
+                lineage_df=lineage_df,
+                selected_clonotypes=lineage_clonotypes,
+                selected_organ_cell="",
+                lineage_label=f"{mouse_id} {lineage}",
+                clonotype_color_map=clonotype_color_map,
+                aggregate_non_selected=True,
+                non_selected_label="Other clonotypes",
+            )
+            if stacked_flow_fig is None:
+                st.info(f"No non-zero {lineage} abundances available for {mouse_id}.")
+                continue
+            stacked_flow_fig.update_layout(height=430)
+            st.plotly_chart(stacked_flow_fig, width="stretch")
+
+        st.markdown("---")
+
+
 def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Choose a page",
-        ("Per individual", "Summary all individuals"),
+        ("Per individual", "Summary all individuals", "All-clonotype flow"),
         index=0,
-        help="Switch between the detailed per-mouse view and the cohort summary.",
+        help="Switch between detailed view, cohort summary, and per-mouse all-clonotype flow.",
     )
 
     df = load_dataset_from_sidebar()
 
     if page == "Per individual":
         run_per_individual_page(df)
-    else:
+    elif page == "Summary all individuals":
         run_summary_all_page(df)
+    else:
+        run_all_clonotype_flow_page(df)
 
 if __name__ == "__main__":
     main()

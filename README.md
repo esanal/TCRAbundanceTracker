@@ -2,7 +2,7 @@
 
 An interactive Streamlit app for exploring TCR clonotype abundance across mice, individual, organs, cell types, and chains.
 
-# Run on streamlit.io
+## Run on streamlit.io
 https://tcrexplorer.streamlit.app/
 
 ## Features

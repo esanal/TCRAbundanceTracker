@@ -18,10 +18,10 @@ import numpy as np
 CANONICAL_COLUMNS: Dict[str, List[str]] = {
     "mouse": ["mouse", "individual", "mouse_id", "animal", "animal_id"],
     "organ": ["organ", "tissue"],
-    "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype", "cell.type"],
+    "cell_type": ["cell_type", "celltype", "cell type", "cell", "celltype", "cell.type", "Cell"],
     "chain": ["chain", "tcr_chain"],
     "clonotype": ["clonotype", "clonetype", "cdr3", "sequence", "tcr", "nSeqCDR3"],
-    "abundance": ["abundance", "count", "frequency", "freq"]
+    "abundance": ["abundance", "count", "frequency", "freq", "Abundance"]
 }
 
 REQUIRED_COLUMNS = ["mouse", "organ", "cell_type", "chain", "clonotype", "abundance"]
@@ -612,6 +612,7 @@ def build_clonotype_presence_grid_figure(
     df: pd.DataFrame,
     selected_clonotypes: List[str],
     top_n: int,
+    query_top_n: str,
     selected_organ_cell: str,
     show_clonotype_sequences: bool = True,
     x_spacing: float = 0.62,
@@ -631,9 +632,16 @@ def build_clonotype_presence_grid_figure(
     )
     row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
     row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
-    row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
-        "organ_cell"
-    )["clonotype"].apply(set).to_dict()
+    if query_top_n == "all": 
+        row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
+            "organ_cell"
+        )["clonotype"].apply(set).to_dict()
+    elif query_top_n:
+        row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
+                "organ_cell").apply(
+                        lambda x: x.nlargest(int(query_top_n), "abundance", keep="all"), include_groups=False
+                        ).groupby(level=0)["clonotype"].apply(set).to_dict()
+  
     available_rows = set(df["organ_cell"].unique())
 
     grid_rows = (

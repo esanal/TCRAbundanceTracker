@@ -113,7 +113,7 @@ def run_per_individual_page(df: pd.DataFrame):
     with scale_cols[0]:
         log_axis = st.checkbox(
             "Log10 scale",
-            value=True,
+            value=False,
             help=(
                 "Display values on a log10 axis. Missing clone values are shown with a "
                 "dynamic pseudo-0 per organ|cell"
@@ -122,7 +122,7 @@ def run_per_individual_page(df: pd.DataFrame):
     with scale_cols[1]:
         normalize_topn_individual = st.checkbox(
             f"Normalize by organ/cell top-{int(top_n)} denominator",
-            value=False,
+            value=True,
             help=(
                 f"For each organ/cell group, divide abundance by that group's sum of the "
                 f"top-{int(top_n)} abundances (within the current mouse), then multiply by 100."
@@ -465,11 +465,23 @@ def run_per_individual_page(df: pd.DataFrame):
         f"Blue: present but not in that row top-{int(top_n)}, "
         "White: not present."
     )
-    show_clonotype_sequences = st.checkbox(
-        "Show clonotype sequences on x-axis",
-        value=False,
-        help="Turn off to use compact rank labels (C1, C2, ...).",
-    )
+
+    # input columns for Kiki plot
+    grid_selection_cols = st.columns(2)
+    with grid_selection_cols[0]:
+        query_top_n = st.text_input(
+                f"Search {top_n_scope} clonotypes within the top N clonotypes in other organ|cell groups:",
+                #min_value=1,
+                #max_value=1000,
+                value=500
+        )
+    with grid_selection_cols[1]:
+        show_clonotype_sequences = st.checkbox(
+            "Show clonotype sequences on x-axis",
+            value=False,
+            help="Turn off to use compact rank labels (C1, C2, ...).",
+        )
+
     grid_source_with_lineage = filtered.copy()
     grid_source_with_lineage["cd_group"] = grid_source_with_lineage["cell_type"].apply(
         classify_cd4_cd8
@@ -507,6 +519,7 @@ def run_per_individual_page(df: pd.DataFrame):
             df=lineage_grid_df,
             selected_clonotypes=lineage_grid_clonotypes,
             top_n=int(top_n),
+            query_top_n = query_top_n,
             selected_organ_cell=top_n_scope,
             show_clonotype_sequences=show_clonotype_sequences,
             row_categories=shared_grid_rows,
@@ -1283,12 +1296,25 @@ def run_summary_all_page(df: pd.DataFrame):
         f"Blue: present but not in that row top-{int(top_n)}, "
         "White: not present."
     )
-    show_clonotype_sequences_summary = st.checkbox(
-        "Show clonotype sequences on x-axis",
-        value=False,
-        key="summary_grid_show_sequences",
-        help="Turn off to use compact rank labels (C1, C2, ...).",
-    )
+    
+    # input columns for Kiki plot
+    grid_selection_cols_sum = st.columns(2)
+    with grid_selection_cols_sum[0]:
+        query_top_n_sum = st.text_input(
+                f"Search {subset_selected} clonotypes within the top N clonotypes in other organ|cell groups:",
+                #min_value=1,
+                #max_value=1000,
+                value=500
+        )
+    with grid_selection_cols_sum[1]:
+        show_clonotype_sequences_summary = st.checkbox(
+            "Show clonotype sequences on x-axis",
+            value=False,
+            key="summary_grid_show_sequences",
+            help="Turn off to use compact rank labels (C1, C2, ...).",
+        )
+
+
     plotted_any_grid = False
     for lineage in ["CD4", "CD8"]:
         st.markdown(f"**{lineage}**")
@@ -1340,6 +1366,7 @@ def run_summary_all_page(df: pd.DataFrame):
                         df=mouse_df,
                         selected_clonotypes=mouse_grid_clonotypes,
                         top_n=int(top_n),
+                        query_top_n = query_top_n_sum,
                         selected_organ_cell=subset_selected,
                         show_clonotype_sequences=show_clonotype_sequences_summary,
                         row_categories=shared_summary_grid_rows,

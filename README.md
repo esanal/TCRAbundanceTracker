@@ -2,6 +2,9 @@
 
 An interactive Streamlit app for exploring TCR clonotype abundance across mice, individual, organs, cell types, and chains.
 
+# Run on streamlit.io
+https://tcrexplorer.streamlit.app/
+
 ## Features
 - Filter by mouse, organ, cell type, and chain.
 - Heatmap of top clonotype abundance by organ/cell combinations.
@@ -24,9 +27,6 @@ The app looks for these columns (case-insensitive):
 ```bash
 streamlit run app.py
 ```
-
-# Run on streamlit.io
-https://tcrexplorer.streamlit.app/
 
 ## Large uploads
 To allow CSV uploads larger than 200 MB, Streamlit reads the `.streamlit/config.toml`

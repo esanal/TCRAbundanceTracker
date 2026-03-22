@@ -535,6 +535,44 @@ def run_per_individual_page(df: pd.DataFrame):
             base_filename=f"clonotype_presence_grid_{lineage}_{top_n_scope}".replace(" ", "_"),
             key_prefix=f"lineage_grid_{lineage}",
         )
+        lineage_grid_counts = build_clonotype_presence_grid_dataframe(
+            df=lineage_grid_df,
+            selected_clonotypes=lineage_grid_clonotypes,
+            top_n=int(top_n),
+            query_top_n=query_top_n,
+            row_categories=shared_grid_rows,
+        )
+        row_count_summary, col_count_summary = summarize_clonotype_presence_grid_counts(
+            grid_df=lineage_grid_counts,
+            top_in_row_label=f"Top-{int(top_n)} in row",
+            present_not_top_label=f"Present (not Top-{int(top_n)} in row)",
+        )
+        st.markdown(f"**{lineage} row and clonotype counts**")
+        histogram_cols = st.columns(2)
+        row_hist_fig = build_clonotype_presence_count_histogram(
+            summary_df=row_count_summary,
+            axis_label="Row",
+            top_n=int(top_n),
+            selected_label=top_n_scope,
+        )
+        col_hist_fig = build_clonotype_presence_count_histogram(
+            summary_df=col_count_summary,
+            axis_label="Column",
+            top_n=int(top_n),
+            show_clonotype_sequences=show_clonotype_sequences,
+        )
+        if row_hist_fig is not None:
+            with histogram_cols[0]:
+                st.plotly_chart(row_hist_fig, width="stretch")
+        else:
+            with histogram_cols[0]:
+                st.info(f"No {lineage} row-count plot available.")
+        if col_hist_fig is not None:
+            with histogram_cols[1]:
+                st.plotly_chart(col_hist_fig, width="stretch")
+        else:
+            with histogram_cols[1]:
+                st.info(f"No {lineage} clonotype-count plot available.")
         if lineage == "CD4" and lineage_plotted:
             render_clonotype_presence_grid_legend(int(top_n))
     if plotted_any_grid:
@@ -1316,6 +1354,7 @@ def run_summary_all_page(df: pd.DataFrame):
 
 
     plotted_any_grid = False
+    pooled_lineage_row_summaries: Dict[str, List[pd.DataFrame]] = {}
     for lineage in ["CD4", "CD8"]:
         st.markdown(f"**{lineage}**")
         lineage_filtered_summary = filtered_with_lineage[
@@ -1329,6 +1368,7 @@ def run_summary_all_page(df: pd.DataFrame):
             continue
         mouse_ids = sorted(lineage_filtered_summary["mouse"].unique())
         lineage_plotted = False
+        lineage_row_summaries: List[pd.DataFrame] = []
         grid_columns = 2
         for row_start in range(0, len(mouse_ids), grid_columns):
             row_mouse_ids = mouse_ids[row_start : row_start + grid_columns]
@@ -1384,6 +1424,49 @@ def run_summary_all_page(df: pd.DataFrame):
                         ).replace(" ", "_"),
                         key_prefix=f"summary_grid_{lineage}_{mouse_id}",
                     )
+                    summary_grid_counts = build_clonotype_presence_grid_dataframe(
+                        df=mouse_df,
+                        selected_clonotypes=mouse_grid_clonotypes,
+                        top_n=int(top_n),
+                        query_top_n=query_top_n_sum,
+                        row_categories=shared_summary_grid_rows,
+                    )
+                    row_count_summary, col_count_summary = summarize_clonotype_presence_grid_counts(
+                        grid_df=summary_grid_counts,
+                        top_in_row_label=f"Top-{int(top_n)} in row",
+                        present_not_top_label=f"Present (not Top-{int(top_n)} in row)",
+                    )
+                    lineage_row_summaries.append(row_count_summary)
+                    st.markdown(
+                        f"**{mouse_id} {lineage} row and clonotype counts**"
+                    )
+                    histogram_cols = st.columns(2)
+                    row_hist_fig = build_clonotype_presence_count_histogram(
+                        summary_df=row_count_summary,
+                        axis_label="Row",
+                        top_n=int(top_n),
+                        selected_label=subset_selected,
+                    )
+                    col_hist_fig = build_clonotype_presence_count_histogram(
+                        summary_df=col_count_summary,
+                        axis_label="Column",
+                        top_n=int(top_n),
+                        show_clonotype_sequences=show_clonotype_sequences_summary,
+                    )
+                    if row_hist_fig is not None:
+                        with histogram_cols[0]:
+                            st.plotly_chart(row_hist_fig, width="stretch")
+                    else:
+                        with histogram_cols[0]:
+                            st.info(f"No {mouse_id} {lineage} row-count plot available.")
+                    if col_hist_fig is not None:
+                        with histogram_cols[1]:
+                            st.plotly_chart(col_hist_fig, width="stretch")
+                    else:
+                        with histogram_cols[1]:
+                            st.info(f"No {mouse_id} {lineage} clonotype-count plot available.")
+        if lineage_row_summaries:
+            pooled_lineage_row_summaries[lineage] = lineage_row_summaries
         if not lineage_plotted:
             st.info(f"No per-individual {lineage} clonotype presence grids available.")
         if lineage == "CD4" and lineage_plotted:
@@ -1393,6 +1476,24 @@ def run_summary_all_page(df: pd.DataFrame):
         st.info("No per-individual clonotype presence grids available for the current filters.")
     else:
         render_clonotype_presence_grid_legend(int(top_n))
+        if pooled_lineage_row_summaries:
+            st.subheader("Pooled Organ/Cell Counts Across Individuals")
+            st.caption(
+                "Bars show the per-organ|cell median across individuals. "
+                "Dots show the individual mouse values for red, blue, and total counts."
+            )
+            for lineage in ["CD4", "CD8"]:
+                lineage_summaries = pooled_lineage_row_summaries.get(lineage, [])
+                if not lineage_summaries:
+                    continue
+                st.markdown(f"**{lineage}**")
+                aggregate_row_fig = build_aggregate_row_count_figure(
+                    row_summaries=lineage_summaries,
+                    top_n=int(top_n),
+                    selected_label=subset_selected,
+                )
+                if aggregate_row_fig is not None:
+                    st.plotly_chart(aggregate_row_fig, width="stretch")
 
     display_count = max(10, top_n)
     st.subheader("Top clonotypes across individuals")

@@ -618,31 +618,18 @@ def build_clonotype_presence_grid_figure(
     x_spacing: float = 0.62,
     row_categories: Optional[List[str]] = None,
 ) -> Optional[go.Figure]:
-    if df.empty or not selected_clonotypes:
-        return None
-
-    organ_cell_totals = (
-        df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
-        .sum()
-        .sort_values(
-            ["organ_cell", "abundance", "clonotype"],
-            ascending=[True, False, True],
-            kind="mergesort",
-        )
+    top_in_row_label = f"Top-{int(top_n)} in row"
+    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
+    grid_df = build_clonotype_presence_grid_dataframe(
+        df=df,
+        selected_clonotypes=selected_clonotypes,
+        top_n=top_n,
+        query_top_n=query_top_n,
+        row_categories=row_categories,
+        x_spacing=x_spacing,
     )
-    row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
-    row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
-    if query_top_n == "all": 
-        row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
-            "organ_cell"
-        )["clonotype"].apply(set).to_dict()
-    elif query_top_n:
-        row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
-                "organ_cell").apply(
-                        lambda x: x.nlargest(int(query_top_n), "abundance", keep="all"), include_groups=False
-                        ).groupby(level=0)["clonotype"].apply(set).to_dict()
-  
-    available_rows = set(df["organ_cell"].unique())
+    if grid_df.empty:
+        return None
 
     grid_rows = (
         list(row_categories)
@@ -650,43 +637,18 @@ def build_clonotype_presence_grid_figure(
         else sorted(df["organ_cell"].unique())
     )
     grid_cols = [str(clonotype) for clonotype in selected_clonotypes]
-    if not grid_rows or not grid_cols:
-        return None
-
     x_positions = [idx * x_spacing for idx in range(len(grid_cols))]
     x_tick_labels = (
         grid_cols
         if show_clonotype_sequences
         else [f"C{idx + 1}" for idx in range(len(grid_cols))]
     )
-    top_in_row_label = f"Top-{int(top_n)} in row"
-    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
 
-    grid_records: List[Dict[str, object]] = []
-    for row_idx, organ_cell in enumerate(grid_rows):
-        if organ_cell not in available_rows:
-            continue
-        topn_set = row_topn_map.get(organ_cell, set())
-        present_set = row_present_map.get(organ_cell, set())
-        for col_idx, clonotype in enumerate(grid_cols):
-            if clonotype in topn_set:
-                status = top_in_row_label
-            elif clonotype in present_set:
-                status = present_not_top_label
-            else:
-                status = "Not present"
-            grid_records.append(
-                {
-                    "row_idx": row_idx,
-                    "col_idx": x_positions[col_idx],
-                    "organ_cell": organ_cell,
-                    "clonotype": clonotype,
-                    "status": status,
-                }
-            )
-    grid_df = pd.DataFrame(grid_records)
-    if grid_df.empty:
-        return None
+    row_summary, col_summary = summarize_clonotype_presence_grid_counts(
+        grid_df=grid_df,
+        top_in_row_label=top_in_row_label,
+        present_not_top_label=present_not_top_label,
+    )
 
     grid_fig = go.Figure()
     status_styles = [
@@ -725,7 +687,7 @@ def build_clonotype_presence_grid_figure(
         yaxis_title=None,
         plot_bgcolor="#ffffff",
         showlegend=False,
-        margin={"l": 80, "r": 20, "t": 40, "b": 70},
+        margin={"l": 80, "r": 110, "t": 80, "b": 70},
     )
     grid_fig.update_xaxes(
         tickmode="array",
@@ -745,7 +707,382 @@ def build_clonotype_presence_grid_figure(
         showgrid=False,
         zeroline=False,
     )
+
+    for _, row in row_summary.iterrows():
+        red_count = int(row.get(top_in_row_label, 0))
+        blue_count = int(row.get(present_not_top_label, 0))
+        total_count = red_count + blue_count
+        grid_fig.add_annotation(
+            x=1.01,
+            xref="paper",
+            y=float(row["row_idx"]),
+            yref="y",
+            text=(
+                f"<span style='color:#d62728'>R:{red_count}</span> "
+                f"<span style='color:#1f77b4'>B:{blue_count}</span> "
+                f"<span style='color:#111827'>T:{total_count}</span>"
+            ),
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            align="left",
+            font={"size": 11},
+        )
+
+    top_annotation_y = -0.85
+    for _, col in col_summary.iterrows():
+        red_count = int(col.get(top_in_row_label, 0))
+        blue_count = int(col.get(present_not_top_label, 0))
+        total_count = red_count + blue_count
+        grid_fig.add_annotation(
+            x=float(col["col_idx"]),
+            xref="x",
+            y=top_annotation_y,
+            yref="y",
+            text=(
+                f"<span style='color:#d62728'>R:{red_count}</span><br>"
+                f"<span style='color:#1f77b4'>B:{blue_count}</span><br>"
+                f"<span style='color:#111827'>T:{total_count}</span>"
+            ),
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            align="center",
+            font={"size": 11},
+        )
+
     return grid_fig
+
+
+def build_clonotype_presence_grid_dataframe(
+    df: pd.DataFrame,
+    selected_clonotypes: List[str],
+    top_n: int,
+    query_top_n: str,
+    row_categories: Optional[List[str]] = None,
+    x_spacing: float = 0.62,
+) -> pd.DataFrame:
+    if df.empty or not selected_clonotypes:
+        return pd.DataFrame()
+
+    organ_cell_totals = (
+        df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
+        .sum()
+        .sort_values(
+            ["organ_cell", "abundance", "clonotype"],
+            ascending=[True, False, True],
+            kind="mergesort",
+        )
+    )
+    row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
+    row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
+    if query_top_n == "all":
+        row_present_map = organ_cell_totals[organ_cell_totals["abundance"] > 0].groupby(
+            "organ_cell"
+        )["clonotype"].apply(set).to_dict()
+    elif query_top_n:
+        row_present_map = (
+            organ_cell_totals[organ_cell_totals["abundance"] > 0]
+            .groupby("organ_cell")
+            .apply(
+                lambda x: x.nlargest(int(query_top_n), "abundance", keep="all"),
+                include_groups=False,
+            )
+            .groupby(level=0)["clonotype"]
+            .apply(set)
+            .to_dict()
+        )
+    else:
+        row_present_map = {}
+
+    available_rows = set(df["organ_cell"].unique())
+    grid_rows = (
+        list(row_categories)
+        if row_categories is not None
+        else sorted(df["organ_cell"].unique())
+    )
+    grid_cols = [str(clonotype) for clonotype in selected_clonotypes]
+    if not grid_rows or not grid_cols:
+        return pd.DataFrame()
+
+    x_positions = [idx * x_spacing for idx in range(len(grid_cols))]
+    top_in_row_label = f"Top-{int(top_n)} in row"
+    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
+
+    grid_records: List[Dict[str, object]] = []
+    for row_idx, organ_cell in enumerate(grid_rows):
+        if organ_cell not in available_rows:
+            continue
+        topn_set = row_topn_map.get(organ_cell, set())
+        present_set = row_present_map.get(organ_cell, set())
+        for col_idx, clonotype in enumerate(grid_cols):
+            if clonotype in topn_set:
+                status = top_in_row_label
+            elif clonotype in present_set:
+                status = present_not_top_label
+            else:
+                status = "Not present"
+            grid_records.append(
+                {
+                    "row_idx": row_idx,
+                    "col_idx": x_positions[col_idx],
+                    "organ_cell": organ_cell,
+                    "clonotype": clonotype,
+                    "status": status,
+                }
+            )
+    return pd.DataFrame(grid_records)
+
+
+def summarize_clonotype_presence_grid_counts(
+    grid_df: pd.DataFrame,
+    top_in_row_label: str,
+    present_not_top_label: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if grid_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    row_summary = (
+        grid_df.groupby(["row_idx", "organ_cell"], as_index=False)
+        .agg(
+            **{
+                top_in_row_label: (
+                    "status",
+                    lambda s: int((s == top_in_row_label).sum()),
+                ),
+                present_not_top_label: (
+                    "status",
+                    lambda s: int((s == present_not_top_label).sum()),
+                ),
+            }
+        )
+        .sort_values(["row_idx", "organ_cell"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    col_summary = (
+        grid_df.groupby(["col_idx", "clonotype"], as_index=False)
+        .agg(
+            **{
+                top_in_row_label: (
+                    "status",
+                    lambda s: int((s == top_in_row_label).sum()),
+                ),
+                present_not_top_label: (
+                    "status",
+                    lambda s: int((s == present_not_top_label).sum()),
+                ),
+            }
+        )
+        .sort_values(["col_idx", "clonotype"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    for summary_df in [row_summary, col_summary]:
+        if top_in_row_label not in summary_df.columns:
+            summary_df[top_in_row_label] = 0
+        if present_not_top_label not in summary_df.columns:
+            summary_df[present_not_top_label] = 0
+        summary_df["total"] = (
+            summary_df[top_in_row_label].astype(int)
+            + summary_df[present_not_top_label].astype(int)
+        )
+    return row_summary, col_summary
+
+
+def build_clonotype_presence_count_histogram(
+    summary_df: pd.DataFrame,
+    axis_label: str,
+    top_n: int,
+    selected_label: Optional[str] = None,
+    show_clonotype_sequences: bool = True,
+) -> Optional[go.Figure]:
+    if summary_df.empty:
+        return None
+
+    top_in_row_label = f"Top-{int(top_n)} in row"
+    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
+    value_df = summary_df.rename(
+        columns={
+            top_in_row_label: "Red",
+            present_not_top_label: "Blue",
+            "total": "Total",
+        }
+    )
+    label_column = "organ_cell" if axis_label == "Row" else "clonotype"
+    display_label_column = label_column
+    if axis_label != "Row" and not show_clonotype_sequences:
+        value_df = value_df.copy()
+        value_df["display_label"] = [
+            f"C{idx + 1}" for idx in range(len(value_df))
+        ]
+        display_label_column = "display_label"
+    plot_df = value_df[[label_column, "Red", "Blue", "Total"]].copy()
+    if display_label_column != label_column:
+        plot_df["display_label"] = value_df["display_label"]
+        plot_df = plot_df.rename(columns={"display_label": "label"})
+    else:
+        plot_df = plot_df.rename(columns={label_column: "label"})
+    plot_df["label"] = plot_df["label"].astype(str)
+    plot_df = plot_df.melt(
+        id_vars="label",
+        value_vars=["Red", "Blue", "Total"],
+        var_name="count_type",
+        value_name="count",
+    )
+    if plot_df.empty:
+        return None
+
+    fig = px.bar(
+        plot_df,
+        x="label",
+        y="count",
+        color="count_type",
+        barmode="group",
+        color_discrete_map={"Red": "#d62728", "Blue": "#1f77b4", "Total": "#111827"},
+        labels={
+            "label": axis_label,
+            "count": "Count",
+            "count_type": "Series",
+        },
+        category_orders={"count_type": ["Red", "Blue", "Total"]},
+    )
+    fig.update_layout(
+        title=f"{axis_label} counts",
+        height=360,
+        margin={"l": 20, "r": 20, "t": 60, "b": 40},
+        bargap=0.15,
+        yaxis={"range": [0, int(top_n)], "title": "Count"},
+    )
+    if axis_label == "Row":
+        tickvals = value_df["organ_cell"].astype(str).tolist()
+        ticktext = build_highlighted_tick_labels(tickvals, selected_label or "")
+        fig.update_xaxes(
+            tickangle=45,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+        )
+    else:
+        fig.update_xaxes(tickangle=90)
+    return fig
+
+
+def build_aggregate_row_count_figure(
+    row_summaries: List[pd.DataFrame],
+    top_n: int,
+    selected_label: Optional[str] = None,
+) -> Optional[go.Figure]:
+    if not row_summaries:
+        return None
+
+    non_empty = [summary.copy() for summary in row_summaries if not summary.empty]
+    if not non_empty:
+        return None
+
+    top_in_row_label = f"Top-{int(top_n)} in row"
+    present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
+    combined = pd.concat(non_empty, ignore_index=True)
+    combined = combined.rename(
+        columns={
+            top_in_row_label: "Red",
+            present_not_top_label: "Blue",
+            "total": "Total",
+        }
+    )
+
+    median = (
+        combined.groupby(["row_idx", "organ_cell"], as_index=False)[["Red", "Blue", "Total"]]
+        .median()
+        .sort_values(["row_idx", "organ_cell"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    plot_df = median.melt(
+        id_vars=["row_idx", "organ_cell"],
+        value_vars=["Red", "Blue", "Total"],
+        var_name="count_type",
+        value_name="median_count",
+    )
+    individual_df = combined.melt(
+        id_vars=["row_idx", "organ_cell"],
+        value_vars=["Red", "Blue", "Total"],
+        var_name="count_type",
+        value_name="count",
+    )
+    if plot_df.empty:
+        return None
+
+    colors = {"Red": "#d62728", "Blue": "#1f77b4", "Total": "#111827"}
+    count_types = ["Red", "Blue", "Total"]
+    x_labels = median["organ_cell"].astype(str).tolist()
+    x_positions = list(range(len(x_labels)))
+    offset_map = {"Red": -0.26, "Blue": 0.0, "Total": 0.26}
+    bar_width = 0.22
+
+    fig = go.Figure()
+    for count_type in count_types:
+        current = plot_df[plot_df["count_type"] == count_type].sort_values(
+            ["row_idx", "organ_cell"], kind="mergesort"
+        )
+        bar_x = [pos + offset_map[count_type] for pos in x_positions]
+        fig.add_trace(
+            go.Bar(
+                x=bar_x,
+                y=current["median_count"],
+                width=bar_width,
+                marker_color=colors[count_type],
+                name=count_type,
+                legendgroup=count_type,
+                customdata=current[["organ_cell"]].to_numpy(),
+                hovertemplate=(
+                    "Organ/Cell: %{customdata[0]}<br>"
+                    f"{count_type} median: "
+                    "%{y:.1f}<extra></extra>"
+                ),
+            )
+        )
+    for count_type in ["Red", "Blue", "Total"]:
+        current = individual_df[individual_df["count_type"] == count_type]
+        if current.empty:
+            continue
+        dot_x = current["row_idx"].astype(float) + offset_map[count_type]
+        fig.add_trace(
+            go.Scatter(
+                x=dot_x,
+                y=current["count"],
+                mode="markers",
+                marker={
+                    "symbol": "circle",
+                    "size": 8,
+                    "color": colors[count_type],
+                    "opacity": 0.65,
+                    "line": {"width": 0.8, "color": "#ffffff"},
+                },
+                name=f"{count_type} individuals",
+                legendgroup=count_type,
+                hovertemplate=(
+                    "Organ/Cell: %{customdata[0]}<br>"
+                    f"{count_type} individual count: "
+                    "%{y:.1f}<extra></extra>"
+                ),
+                customdata=current[["organ_cell"]].to_numpy(),
+            )
+        )
+    fig.update_layout(
+        title="Median counts across individuals",
+        height=380,
+        margin={"l": 20, "r": 20, "t": 60, "b": 40},
+        bargap=0,
+        barmode="overlay",
+    )
+    fig.update_yaxes(range=[0, None], title="Count")
+    tickvals = x_positions
+    fig.update_xaxes(
+        tickangle=45,
+        tickmode="array",
+        tickvals=tickvals,
+        ticktext=build_highlighted_tick_labels(x_labels, selected_label or ""),
+        range=[-0.6, len(x_positions) - 1 + 0.6],
+    )
+    return fig
 
 
 def render_clonotype_presence_grid_legend(top_n: int) -> None:
@@ -1132,4 +1469,3 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
     df["organ_cell"] = df["organ"] + " | " + df["cell_type"]
 
     return df
-

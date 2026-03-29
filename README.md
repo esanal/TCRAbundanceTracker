@@ -24,7 +24,7 @@ Each row is a clonotype with the expected columns:
 
 ## Run locally
 
-Install Streamlit (https://docs.streamlit.io/get-started/installation) and run via
+Install Streamlit (https://docs.streamlit.io/get-started/installation), requirements.txt and run via
 ```bash
 streamlit run app.py
 ```

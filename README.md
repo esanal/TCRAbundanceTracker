@@ -12,10 +12,9 @@ https://tcrexplorer.streamlit.app/
 - Download filtered datasets for downstream analysis.
 - Organ|Cell group summaries. Organ|Cell based clonotype occurance of all individuals can be summarized.
 
-## Expected columns
-The app looks for these columns (case-insensitive):
-- `mouse`
-- `individual`
+## Expected columns in the data
+Each row is a clonotype with the expected columns:
+- `mouse` or `individual`
 - `organ`
 - `cell_type`
 - `chain`
@@ -24,6 +23,8 @@ The app looks for these columns (case-insensitive):
 - Optional: `sample`
 
 ## Run locally
+
+Install Streamlit (https://docs.streamlit.io/get-started/installation) and run via
 ```bash
 streamlit run app.py
 ```
@@ -31,8 +32,5 @@ streamlit run app.py
 ## Large uploads
 To allow CSV uploads larger than 200 MB, Streamlit reads the `.streamlit/config.toml`
 file in this repo (set to 1024 MB). Adjust `maxUploadSize` if you need a different limit.
-```bash
-uv sync --reinstall --frozen
-```
 
 Upload your CSV file in the UI to begin exploring.

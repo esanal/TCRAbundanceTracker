@@ -29,8 +29,10 @@ Install Streamlit (https://docs.streamlit.io/get-started/installation), requirem
 streamlit run app.py
 ```
 
-## Large uploads
-To allow CSV uploads larger than 200 MB, Streamlit reads the `.streamlit/config.toml`
-file in this repo (set to 1024 MB). Adjust `maxUploadSize` if you need a different limit.
-
 Upload your CSV file in the UI to begin exploring.
+
+# Naming requirements of the cell subsets
+In the current version, "CD4" or "CD8" strings are expected in the cell subset names.
+Subset names should start with either CD4 or CD8 and a white space after is needed.
+After the white space further description of the subset is expected such as "CD4 Memory".
+

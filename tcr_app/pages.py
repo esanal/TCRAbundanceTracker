@@ -1495,10 +1495,61 @@ def run_summary_all_page(df: pd.DataFrame):
                 if aggregate_row_fig is not None:
                     st.plotly_chart(aggregate_row_fig, width="stretch")
 
-    display_count = max(10, top_n)
     st.subheader("Top clonotypes across individuals")
     st.caption("Sorted by total abundance for the selected subset across all mice.")
-    st.dataframe(topClones, width="stretch")
+
+    table_df = topClones.copy()
+    vdj_controls = st.columns(3)
+    with vdj_controls[0]:
+        enable_vdjdb = st.checkbox(
+            "Enrich with VDJdb",
+            value=False,
+            help="Translate nucleotide clonotypes to amino-acid CDR3, query VDJdb, then append match metadata columns.",
+        )
+    with vdj_controls[1]:
+        max_vdjdb_queries = st.number_input(
+            "Max VDJdb sequence queries",
+            min_value=1,
+            max_value=1000,
+            value=min(200, max(1, table_df["clonotype"].nunique())),
+            step=1,
+            disabled=not enable_vdjdb,
+        )
+    with vdj_controls[2]:
+        allow_fuzzy_vdjdb = st.checkbox(
+            "Fuzzy fallback search",
+            value=False,
+            help="If no exact match is found, use VDJdb sequence fuzzy search (1 substitution/insertion/deletion).",
+            disabled=not enable_vdjdb,
+        )
+
+    if enable_vdjdb:
+        table_df["clonotype_lookup"] = table_df["clonotype"].astype(str).str.strip().str.upper()
+        with st.spinner("Querying VDJdb for clonotype annotations..."):
+            vdjdb_df = enrich_clonotypes_with_vdjdb(
+                clonotypes=table_df["clonotype_lookup"].tolist(),
+                chain_value=chain_selected,
+                max_queries=int(max_vdjdb_queries),
+                allow_fuzzy_fallback=allow_fuzzy_vdjdb,
+            )
+        if vdjdb_df.empty:
+            st.info("No clonotypes were sent to VDJdb.")
+        else:
+            vdjdb_df = vdjdb_df.rename(columns={"clonotype": "clonotype_lookup"})
+            table_df = table_df.merge(vdjdb_df, on="clonotype_lookup", how="left")
+            queried_n = int(vdjdb_df["clonotype_lookup"].nunique())
+            matched_n = int((vdjdb_df["vdjdb_match_count"] > 0).sum())
+            error_n = int(vdjdb_df["vdjdb_error"].astype(str).str.len().gt(0).sum())
+            st.caption(
+                f"VDJdb queried {queried_n} unique sequences; {matched_n} had at least one match."
+            )
+            if error_n > 0:
+                st.warning(
+                    f"VDJdb queries reported {error_n} errors. Table is shown with available results."
+                )
+        table_df = table_df.drop(columns=["clonotype_lookup"], errors="ignore")
+
+    st.dataframe(table_df, width="stretch")
 
 
 def run_all_clonotype_flow_page(df: pd.DataFrame):

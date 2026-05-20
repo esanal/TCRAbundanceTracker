@@ -1,8 +1,9 @@
 import io
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import re
+from urllib import error, request
 
 import networkx as nx
 import pandas as pd
@@ -30,6 +31,26 @@ DEFAULT_EDGE_WIDTH_SCALE = 0.2
 DEFAULT_GRAVITY = -2200
 DEFAULT_SPRING_LENGTH = 180
 PSEUDO_ZERO = 1e-4
+VDJDB_API_BASE_URL = "https://vdjdb.com/api/database"
+DNA_BASES = set("ACGTUN")
+CODON_TABLE: Dict[str, str] = {
+    "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L",
+    "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
+    "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M",
+    "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
+    "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S",
+    "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
+    "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T",
+    "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
+    "TAT": "Y", "TAC": "Y", "TAA": "*", "TAG": "*",
+    "CAT": "H", "CAC": "H", "CAA": "Q", "CAG": "Q",
+    "AAT": "N", "AAC": "N", "AAA": "K", "AAG": "K",
+    "GAT": "D", "GAC": "D", "GAA": "E", "GAG": "E",
+    "TGT": "C", "TGC": "C", "TGA": "*", "TGG": "W",
+    "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R",
+    "AGT": "S", "AGC": "S", "AGA": "R", "AGG": "R",
+    "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G",
+}
 #EXAMPLE_DATASET_FILENAME = "test.abundance.1.csv"
 EXAMPLE_DATASET_FILENAME = "output.csv"
 FALLBACK_EXAMPLE_CSV = """mouse,organ,cell_type,chain,clonotype,abundance,sample
@@ -1014,9 +1035,12 @@ def build_aggregate_row_count_figure(
     count_types = ["Red", "Blue", "Total"]
     x_labels = median["organ_cell"].astype(str).tolist()
     x_positions = list(range(len(x_labels)))
+    position_lookup = {
+        (row["row_idx"], row["organ_cell"]): idx
+        for idx, row in median.sort_values(["row_idx", "organ_cell"], kind="mergesort").iterrows()
+    }
     offset_map = {"Red": -0.26, "Blue": 0.0, "Total": 0.26}
     bar_width = 0.22
-
     fig = go.Figure()
     for count_type in count_types:
         current = plot_df[plot_df["count_type"] == count_type].sort_values(
@@ -1039,11 +1063,18 @@ def build_aggregate_row_count_figure(
                 ),
             )
         )
-    for count_type in ["Red", "Blue", "Total"]:
-        current = individual_df[individual_df["count_type"] == count_type]
+    for count_type in count_types:
+        current = individual_df[individual_df["count_type"] == count_type]#.sort_values(
+                #["row_idx", "organ_cell"], kind="mergesort"
+        #)
         if current.empty:
             continue
         dot_x = current["row_idx"].astype(float) + offset_map[count_type]
+        dot_x = [pos + offset_map[count_type] for pos in x_positions]
+        dot_x = [
+            position_lookup[(row["row_idx"], row["organ_cell"])] + offset_map[count_type]
+            for _, row in current.iterrows()
+        ]
         fig.add_trace(
             go.Scatter(
                 x=dot_x,
@@ -1424,6 +1455,336 @@ def calculate_mouse_correlation(
         return pd.DataFrame()
 
     return feature_matrix.T.corr(method="pearson")
+
+
+def map_chain_to_vdjdb_gene(chain_value: str) -> Optional[str]:
+    value = str(chain_value).upper()
+    if "TRA" in value or value.endswith("A"):
+        return "TRA"
+    if "TRB" in value or value.endswith("B"):
+        return "TRB"
+    return None
+
+
+def nucleotide_to_amino_acid_cdr3(sequence: str) -> str:
+    seq = str(sequence).strip().upper().replace("U", "T")
+    if not seq:
+        return ""
+
+    # If sequence is already amino-acid-like, keep it as-is for VDJdb search.
+    if not set(seq).issubset(DNA_BASES):
+        return seq
+
+    if len(seq) < 3:
+        return ""
+    usable_len = len(seq) - (len(seq) % 3)
+    if usable_len <= 0:
+        return ""
+    seq = seq[:usable_len]
+
+    aa_chars: List[str] = []
+    for i in range(0, len(seq), 3):
+        codon = seq[i : i + 3]
+        if len(codon) < 3:
+            continue
+        if any(base not in {"A", "C", "G", "T"} for base in codon):
+            aa_chars.append("X")
+            continue
+        aa_chars.append(CODON_TABLE.get(codon, "X"))
+
+    aa = "".join(aa_chars)
+    if not aa:
+        return ""
+
+    # Remove terminal stop; internal stop usually indicates invalid CDR3 frame.
+    if aa.endswith("*"):
+        aa = aa[:-1]
+    if "*" in aa:
+        return ""
+    return aa
+
+
+def _vdjdb_post_search(payload: Dict[str, Any], timeout_seconds: int = 15) -> Dict[str, Any]:
+    endpoint = f"{VDJDB_API_BASE_URL}/search"
+    data = json.dumps(payload).encode("utf-8")
+    req = request.Request(
+        endpoint,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        body = response.read().decode("utf-8")
+    return json.loads(body)
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def fetch_vdjdb_metadata() -> Dict[str, Any]:
+    endpoint = f"{VDJDB_API_BASE_URL}/meta"
+    req = request.Request(endpoint, method="GET")
+    with request.urlopen(req, timeout=15) as response:
+        body = response.read().decode("utf-8")
+    payload = json.loads(body)
+    return payload.get("metadata", {})
+
+
+def _build_vdjdb_column_index(metadata: Dict[str, Any]) -> Dict[str, int]:
+    columns = metadata.get("columns", [])
+    if not isinstance(columns, list):
+        return {}
+    return {
+        str(col.get("name")): idx
+        for idx, col in enumerate(columns)
+        if isinstance(col, dict) and "name" in col
+    }
+
+
+def _extract_entry_by_candidates(
+    entries: List[Any], index_by_name: Dict[str, int], candidates: List[str]
+) -> str:
+    for name in candidates:
+        idx = index_by_name.get(name)
+        if idx is None:
+            continue
+        if 0 <= idx < len(entries):
+            value = str(entries[idx]).strip()
+            if value:
+                return value
+    return ""
+
+
+def _mode_or_empty(values: List[str]) -> str:
+    cleaned = [v for v in values if str(v).strip()]
+    if not cleaned:
+        return ""
+    return pd.Series(cleaned).value_counts().index[0]
+
+
+@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
+def query_vdjdb_sequence(
+    sequence: str,
+    gene: str = "",
+    allow_fuzzy_fallback: bool = False,
+) -> Dict[str, Any]:
+    seq = str(sequence).strip().upper()
+    if not seq:
+        return {
+            "clonotype": sequence,
+            "vdjdb_match_count": 0,
+            "vdjdb_top_gene": "",
+            "vdjdb_top_species": "",
+            "vdjdb_top_antigen": "",
+            "vdjdb_top_mhc": "",
+            "vdjdb_top_score": np.nan,
+            "vdjdb_has_paired_record": False,
+            "vdjdb_paired_cdr3_all": "",
+            "vdjdb_paired_cdr3_tra": "",
+            "vdjdb_paired_cdr3_trb": "",
+            "vdjdb_error": "empty sequence",
+        }
+
+    base_filters: List[Dict[str, Any]] = [
+        {"column": "cdr3", "value": seq, "filterType": "exact", "negative": False}
+    ]
+    gene_filter = str(gene).strip().upper()
+    if gene_filter in {"TRA", "TRB"}:
+        base_filters.append(
+            {"column": "gene", "value": gene_filter, "filterType": "exact", "negative": False}
+        )
+
+    payload = {"filters": base_filters, "paired": True}
+    try:
+        search_result = _vdjdb_post_search(payload)
+        if allow_fuzzy_fallback and int(search_result.get("recordsFound", 0)) == 0:
+            fuzzy_filters = [
+                {
+                    "column": "cdr3",
+                    "value": f"{seq}:1:1:1",
+                    "filterType": "sequence",
+                    "negative": False,
+                }
+            ]
+            if gene_filter in {"TRA", "TRB"}:
+                fuzzy_filters.append(
+                    {
+                        "column": "gene",
+                        "value": gene_filter,
+                        "filterType": "exact",
+                        "negative": False,
+                    }
+                )
+            search_result = _vdjdb_post_search({"filters": fuzzy_filters, "paired": True})
+    except (error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "clonotype": sequence,
+            "vdjdb_match_count": 0,
+            "vdjdb_top_gene": "",
+            "vdjdb_top_species": "",
+            "vdjdb_top_antigen": "",
+            "vdjdb_top_mhc": "",
+            "vdjdb_top_score": np.nan,
+            "vdjdb_has_paired_record": False,
+            "vdjdb_paired_cdr3_all": "",
+            "vdjdb_paired_cdr3_tra": "",
+            "vdjdb_paired_cdr3_trb": "",
+            "vdjdb_error": str(exc),
+        }
+
+    rows = search_result.get("rows", [])
+    if not isinstance(rows, list):
+        rows = []
+    records_found = int(search_result.get("recordsFound", 0))
+
+    try:
+        metadata = fetch_vdjdb_metadata()
+    except Exception:
+        metadata = {}
+    index_by_name = _build_vdjdb_column_index(metadata)
+
+    genes: List[str] = []
+    species_values: List[str] = []
+    antigens: List[str] = []
+    mhc_values: List[str] = []
+    scores: List[float] = []
+    paired_all: List[str] = []
+    paired_tra: List[str] = []
+    paired_trb: List[str] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        entries = row.get("entries", [])
+        if not isinstance(entries, list):
+            continue
+        genes.append(_extract_entry_by_candidates(entries, index_by_name, ["gene"]))
+        species_values.append(
+            _extract_entry_by_candidates(
+                entries,
+                index_by_name,
+                ["species", "species.name", "speciesname"],
+            )
+        )
+        antigens.append(
+            _extract_entry_by_candidates(
+                entries,
+                index_by_name,
+                ["antigen.epitope", "epitope", "antigen.gene", "antigen.species"],
+            )
+        )
+        mhc_values.append(
+            _extract_entry_by_candidates(
+                entries,
+                index_by_name,
+                ["mhc.a", "mhc.b", "mhc.class", "mhc"],
+            )
+        )
+        score_raw = _extract_entry_by_candidates(
+            entries,
+            index_by_name,
+            ["vdjdb.score", "score"],
+        )
+        if score_raw:
+            try:
+                scores.append(float(score_raw))
+            except ValueError:
+                pass
+
+        metadata_row = row.get("metadata", {})
+        paired_id = str(metadata_row.get("pairedID", "0")).strip()
+        row_gene = _extract_entry_by_candidates(entries, index_by_name, ["gene"]).upper()
+        row_cdr3 = _extract_entry_by_candidates(entries, index_by_name, ["cdr3"]).upper()
+        if paired_id and paired_id != "0" and row_cdr3 and row_cdr3 != seq:
+            paired_all.append(row_cdr3)
+            if row_gene == "TRA":
+                paired_tra.append(row_cdr3)
+            elif row_gene == "TRB":
+                paired_trb.append(row_cdr3)
+
+    return {
+        "clonotype": seq,
+        "vdjdb_match_count": records_found,
+        "vdjdb_top_gene": _mode_or_empty(genes),
+        "vdjdb_top_species": _mode_or_empty(species_values),
+        "vdjdb_top_antigen": _mode_or_empty(antigens),
+        "vdjdb_top_mhc": _mode_or_empty(mhc_values),
+        "vdjdb_top_score": max(scores) if scores else np.nan,
+        "vdjdb_has_paired_record": len(set(paired_all)) > 0,
+        "vdjdb_paired_cdr3_all": ";".join(sorted(set(paired_all))),
+        "vdjdb_paired_cdr3_tra": ";".join(sorted(set(paired_tra))),
+        "vdjdb_paired_cdr3_trb": ";".join(sorted(set(paired_trb))),
+        "vdjdb_error": "",
+    }
+
+
+def enrich_clonotypes_with_vdjdb(
+    clonotypes: List[str],
+    chain_value: str,
+    max_queries: int = 100,
+    allow_fuzzy_fallback: bool = False,
+) -> pd.DataFrame:
+    unique_nt_sequences = list(
+        dict.fromkeys([str(c).strip().upper() for c in clonotypes if str(c).strip()])
+    )
+    if max_queries > 0:
+        unique_nt_sequences = unique_nt_sequences[: int(max_queries)]
+
+    if not unique_nt_sequences:
+        return pd.DataFrame(
+            columns=[
+                "clonotype",
+                "vdjdb_query_cdr3_aa",
+                "vdjdb_match_count",
+                "vdjdb_top_gene",
+                "vdjdb_top_species",
+                "vdjdb_top_antigen",
+                "vdjdb_top_mhc",
+                "vdjdb_top_score",
+                "vdjdb_has_paired_record",
+                "vdjdb_paired_cdr3_all",
+                "vdjdb_paired_cdr3_tra",
+                "vdjdb_paired_cdr3_trb",
+                "vdjdb_error",
+            ]
+        )
+
+    gene = map_chain_to_vdjdb_gene(chain_value) or ""
+    records: List[Dict[str, Any]] = []
+    aa_result_cache: Dict[str, Dict[str, Any]] = {}
+
+    for nt_seq in unique_nt_sequences:
+        aa_seq = nucleotide_to_amino_acid_cdr3(nt_seq)
+        if not aa_seq:
+            records.append(
+                {
+                    "clonotype": nt_seq,
+                    "vdjdb_query_cdr3_aa": "",
+                    "vdjdb_match_count": 0,
+                    "vdjdb_top_gene": "",
+                    "vdjdb_top_species": "",
+                    "vdjdb_top_antigen": "",
+                    "vdjdb_top_mhc": "",
+                    "vdjdb_top_score": np.nan,
+                    "vdjdb_has_paired_record": False,
+                    "vdjdb_paired_cdr3_all": "",
+                    "vdjdb_paired_cdr3_tra": "",
+                    "vdjdb_paired_cdr3_trb": "",
+                    "vdjdb_error": "unable to translate nucleotide CDR3 to amino acid",
+                }
+            )
+            continue
+
+        if aa_seq not in aa_result_cache:
+            aa_result_cache[aa_seq] = query_vdjdb_sequence(
+                sequence=aa_seq,
+                gene=gene,
+                allow_fuzzy_fallback=allow_fuzzy_fallback,
+            )
+        aa_result = aa_result_cache[aa_seq].copy()
+        aa_result["clonotype"] = nt_seq
+        aa_result["vdjdb_query_cdr3_aa"] = aa_seq
+        records.append(aa_result)
+
+    return pd.DataFrame(records)
 
 
 def load_dataset_from_sidebar() -> pd.DataFrame:

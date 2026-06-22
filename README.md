@@ -12,6 +12,9 @@ https://tcrexplorer.streamlit.app/
 - Download filtered datasets for downstream analysis.
 - Organ|Cell group summaries. Organ|Cell based clonotype occurance of all individuals can be summarized.
 
+## Run local: use uv
+This project uses uv for fast and reliable dependency management.
+
 ## Expected columns in the data
 Each row is a clonotype with the expected columns:
 - `mouse` or `individual`
@@ -35,5 +38,3 @@ streamlit run app.py
 ```
 
 Upload your CSV file in the UI to begin exploring.
-
-

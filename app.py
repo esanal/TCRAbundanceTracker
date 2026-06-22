@@ -35,7 +35,7 @@ def main() -> None:
         st.sidebar.warning(
             "Figure download (PNG/PDF) unavailable. "
             "If deploying on Streamlit Cloud, ensure a "
-            "`packages.txt` with `libgl1` and `libglib2.0-0` exists in the repo root."
+            "`packages.txt` with `libgl1` exists in the repo root."
         )
 
     st.sidebar.title("Navigation")

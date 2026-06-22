@@ -18,24 +18,29 @@ from tcr_app.page_all_clonotype_flow import run_all_clonotype_flow_page
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
 
 
-@st.cache_data
-def _kaleido_available() -> bool:
-    """Test whether Plotly image export (Kaleido) works on this host."""
+def _check_kaleido() -> str | None:
+    """Return None if Kaleido export works, or an error message if it doesn't."""
+    try:
+        import kaleido as _k  # noqa: F401 — ensure the package itself is importable
+    except ImportError as exc:
+        return f"kaleido pip package not installed ({exc}). Add `kaleido>=0.2.1` to pyproject.toml."
+
     try:
         fig = go.Figure(go.Scatter(x=[0], y=[0]))
         pio.to_image(fig, format="png")
-        return True
-    except Exception:
-        return False
+        return None
+    except Exception as exc:
+        return f"Kaleido render failed: {type(exc).__name__}: {exc}"
 
 
 def main() -> None:
     """Set up sidebar navigation, load data, and dispatch to the selected page."""
-    if not _kaleido_available():
+    kaleido_err = _check_kaleido()
+    if kaleido_err is not None:
         st.sidebar.warning(
-            "Figure download (PNG/PDF) unavailable. "
-            "If deploying on Streamlit Cloud, ensure a "
-            "`packages.txt` with `libgl1` exists in the repo root."
+            f"Figure download (PNG/PDF) unavailable.\n\n{kaleido_err}"
+            "\n\nIf deploying on Streamlit Cloud, ensure `packages.txt` "
+            "in the repo root contains `libgl1`."
         )
 
     st.sidebar.title("Navigation")

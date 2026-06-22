@@ -5,6 +5,7 @@ selects the top-N union, and renders stacked bar/band flow figures showing how t
 same clonotypes distribute across anatomical sites.
 """
 
+import pandas as pd
 import streamlit as st
 
 from tcr_app.core import (

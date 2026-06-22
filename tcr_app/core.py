@@ -7,8 +7,9 @@ Provides all shared functions used across pages:
 - PyVis interactive network HTML generation
 - VDJdb TCR-antigen annotation integration
 """
-
+import copy
 import io
+
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1213,35 +1214,48 @@ def render_plot_download_buttons(
     Silently handles cases where Kaleido is not available for image export.
     """
     safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", base_filename).strip("_") or "plot"
+
+    export_fig = copy.deepcopy(fig)
+    export_fig.update_xaxes(automargin=True)
+    export_fig.update_yaxes(automargin=True)
+    orig_height = export_fig.layout.height or 500
+    export_fig.update_layout(
+        width=1400,
+        height=orig_height + 300,
+        margin={"l": 200, "r": 80, "t": 80, "b": 400},
+    )
+
     png_bytes: Optional[bytes] = None
     pdf_bytes: Optional[bytes] = None
     try:
-        png_bytes = fig.to_image(format="png", scale=2)
+        png_bytes = export_fig.to_image(format="png", scale=2)
     except Exception:
         png_bytes = None
     try:
-        pdf_bytes = fig.to_image(format="pdf")
+        pdf_bytes = export_fig.to_image(format="pdf")
     except Exception:
         pdf_bytes = None
 
-    button_cols = st.columns(2)
-    with button_cols[0]:
+    png_col, pdf_col, _ = st.columns([1, 1, 6], gap="small")
+    with png_col:
         if png_bytes is not None:
             st.download_button(
-                "Download PNG",
+                "PNG",
                 data=png_bytes,
                 file_name=f"{safe_filename}.png",
                 mime="image/png",
                 key=f"{key_prefix}_download_png",
+                use_container_width=True,
             )
-    with button_cols[1]:
+    with pdf_col:
         if pdf_bytes is not None:
             st.download_button(
-                "Download PDF",
+                "PDF",
                 data=pdf_bytes,
                 file_name=f"{safe_filename}.pdf",
                 mime="application/pdf",
                 key=f"{key_prefix}_download_pdf",
+                use_container_width=True,
             )
 
 

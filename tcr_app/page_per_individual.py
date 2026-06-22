@@ -143,6 +143,11 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
     )
 
     st.plotly_chart(heatmap_fig, width="stretch")
+    render_plot_download_buttons(
+        heatmap_fig,
+        base_filename=f"abundance_heatmap_{mouse_selected}_{chain_selected}".replace(" ", "_"),
+        key_prefix=f"heatmap_{mouse_selected}",
+    )
 
     st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
     st.caption(
@@ -289,6 +294,11 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
                 )
             )
         st.plotly_chart(line_fig, width="stretch")
+        render_plot_download_buttons(
+            line_fig,
+            base_filename=f"line_plot_{lineage}_{mouse_selected}".replace(" ", "_"),
+            key_prefix=f"line_{lineage}",
+        )
 
 
     st.subheader("Hierarchical Organ/Cell-Clonotype Network")
@@ -390,6 +400,11 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         st.info("No clonotypes match the chord filters.")
     else:
         st.plotly_chart(chord_fig, width="stretch")
+        render_plot_download_buttons(
+            chord_fig,
+            base_filename=f"chord_diagram_{mouse_selected}".replace(" ", "_"),
+            key_prefix="chord",
+        )
         st.caption(
             f"Chord edges shown: {len(chord_edges)} "
             f"across {chord_edges['clonotype'].nunique()} clonotypes and "
@@ -409,6 +424,11 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         )
         shared_heatmap.update_layout(height=420)
         st.plotly_chart(shared_heatmap, width="stretch")
+        render_plot_download_buttons(
+            shared_heatmap,
+            base_filename=f"shared_clonotypes_heatmap_{mouse_selected}".replace(" ", "_"),
+            key_prefix="shared_heatmap",
+        )
 
     st.subheader("Network Metrics")
     metrics_df = calculate_network_metrics(
@@ -496,6 +516,11 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             st.info(f"No non-zero {lineage} abundances available for stacked flow.")
             continue
         st.plotly_chart(stacked_flow_fig, width="stretch")
+        render_plot_download_buttons(
+            stacked_flow_fig,
+            base_filename=f"stacked_flow_{lineage}_{mouse_selected}".replace(" ", "_"),
+            key_prefix=f"stacked_flow_{lineage}",
+        )
 
     st.subheader("Clonotype Presence Grid Across Organ/Cell")
     st.caption(
@@ -604,12 +629,22 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         if row_hist_fig is not None:
             with histogram_cols[0]:
                 st.plotly_chart(row_hist_fig, width="stretch")
+                render_plot_download_buttons(
+                    row_hist_fig,
+                    base_filename=f"row_histogram_{lineage}_{mouse_selected}_{top_n_scope}".replace(" ", "_"),
+                    key_prefix=f"row_hist_{lineage}",
+                )
         else:
             with histogram_cols[0]:
                 st.info(f"No {lineage} row-count plot available.")
         if col_hist_fig is not None:
             with histogram_cols[1]:
                 st.plotly_chart(col_hist_fig, width="stretch")
+                render_plot_download_buttons(
+                    col_hist_fig,
+                    base_filename=f"col_histogram_{lineage}_{mouse_selected}_{top_n_scope}".replace(" ", "_"),
+                    key_prefix=f"col_hist_{lineage}",
+                )
         else:
             with histogram_cols[1]:
                 st.info(f"No {lineage} clonotype-count plot available.")

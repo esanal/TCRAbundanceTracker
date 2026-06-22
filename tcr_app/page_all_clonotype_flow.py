@@ -13,6 +13,7 @@ from tcr_app.core import (
     build_stacked_clonotype_band_figure,
     classify_cd4_cd8,
     get_organ_cell_order,
+    render_plot_download_buttons,
 )
 
 
@@ -142,5 +143,10 @@ def run_all_clonotype_flow_page(df: pd.DataFrame) -> None:
                 continue
             stacked_flow_fig.update_layout(height=430)
             st.plotly_chart(stacked_flow_fig, width="stretch")
+            render_plot_download_buttons(
+                stacked_flow_fig,
+                base_filename=f"all_clonotype_flow_{mouse_id}_{lineage}".replace(" ", "_"),
+                key_prefix=f"flow_{mouse_id}_{lineage}",
+            )
 
         st.markdown("---")

@@ -235,6 +235,11 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                 )
                 heatmap_fig.update_layout(height=420)
                 st.plotly_chart(heatmap_fig, width="stretch")
+                render_plot_download_buttons(
+                    heatmap_fig,
+                    base_filename=f"cosine_heatmap_{lineage}".replace(" ", "_"),
+                    key_prefix=f"cosine_heatmap_{lineage}",
+                )
                 st.dataframe(similarity_df.round(4), width="stretch")
     else:
         st.subheader("Correlation Across Individuals (Top Clones)")
@@ -257,6 +262,11 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                 )
                 heatmap_fig.update_layout(height=420)
                 st.plotly_chart(heatmap_fig, width="stretch")
+                render_plot_download_buttons(
+                    heatmap_fig,
+                    base_filename=f"correlation_heatmap_{lineage}".replace(" ", "_"),
+                    key_prefix=f"correlation_heatmap_{lineage}",
+                )
                 st.dataframe(similarity_df.round(4), width="stretch")
 
     all_selection_cosine_records: List[Dict[str, object]] = []
@@ -476,6 +486,11 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         categoryarray=lineage_axis_options,
                     )
                     st.plotly_chart(summary_plot, width="stretch")
+                    render_plot_download_buttons(
+                        summary_plot,
+                        base_filename=f"cosine_summary_{lineage}".replace(" ", "_"),
+                        key_prefix=f"cosine_summary_{lineage}",
+                    )
         else:
             st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
             st.caption(
@@ -581,6 +596,11 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         categoryarray=lineage_axis_options,
                     )
                     st.plotly_chart(summary_plot, width="stretch")
+                    render_plot_download_buttons(
+                        summary_plot,
+                        base_filename=f"correlation_summary_{lineage}".replace(" ", "_"),
+                        key_prefix=f"correlation_summary_{lineage}",
+                    )
 
     st.subheader("Clonotype Presence Grid Across Organ/Cell")
     st.caption(
@@ -712,12 +732,22 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                     if row_hist_fig is not None:
                         with histogram_cols[0]:
                             st.plotly_chart(row_hist_fig, width="stretch")
+                            render_plot_download_buttons(
+                                row_hist_fig,
+                                base_filename=f"row_histogram_{lineage}_{mouse_id}_{subset_selected}".replace(" ", "_"),
+                                key_prefix=f"summary_row_hist_{lineage}_{mouse_id}",
+                            )
                     else:
                         with histogram_cols[0]:
                             st.info(f"No {mouse_id} {lineage} row-count plot available.")
                     if col_hist_fig is not None:
                         with histogram_cols[1]:
                             st.plotly_chart(col_hist_fig, width="stretch")
+                            render_plot_download_buttons(
+                                col_hist_fig,
+                                base_filename=f"col_histogram_{lineage}_{mouse_id}_{subset_selected}".replace(" ", "_"),
+                                key_prefix=f"summary_col_hist_{lineage}_{mouse_id}",
+                            )
                     else:
                         with histogram_cols[1]:
                             st.info(f"No {mouse_id} {lineage} clonotype-count plot available.")
@@ -869,6 +899,11 @@ def _render_summary_subset_top_clonotype_section(
                     st.info(f"No {lineage} abundance plot could be built for {subset_selected}.")
                 else:
                     st.plotly_chart(lineage_fig, width="stretch")
+                    render_plot_download_buttons(
+                        lineage_fig,
+                        base_filename=f"lineage_abundance_{lineage}_{subset_selected}".replace(" ", "_"),
+                        key_prefix=f"lineage_abundance_{lineage}",
+                    )
 
     pooled_lineage_row_summaries: Dict[str, List[pd.DataFrame]] = {}
     for lineage in ["CD4", "CD8"]:
@@ -935,6 +970,11 @@ def _render_summary_subset_top_clonotype_section(
             )
             if aggregate_row_fig is not None:
                 st.plotly_chart(aggregate_row_fig, width="stretch")
+                render_plot_download_buttons(
+                    aggregate_row_fig,
+                    base_filename=f"aggregate_row_count_{lineage}_{subset_selected}".replace(" ", "_"),
+                    key_prefix=f"aggregate_row_{lineage}_{subset_selected}".replace(" ", "_"),
+                )
     else:
         st.info("No pooled row summaries could be computed for this selection.")
 

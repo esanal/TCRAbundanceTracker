@@ -40,7 +40,8 @@ def main() -> None:
         st.sidebar.warning(
             f"Figure download (PNG/PDF) unavailable.\n\n{kaleido_err}"
             "\n\nIf deploying on Streamlit Cloud, ensure `packages.txt` "
-            "in the repo root contains `libgl1`."
+            "in the repo root contains:\n"
+            "```\nlibgl1\nchromium\n```"
         )
 
     st.sidebar.title("Navigation")

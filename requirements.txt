@@ -1,6 +1,0 @@
-streamlit>=1.40.0
-pandas>=2.2.3
-plotly>=5.18.0
-numpy>=1.26
-pyvis>=0.3.2
-networkx>=3.3

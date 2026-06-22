@@ -1,3 +1,13 @@
+"""Core business logic and visualization engine for the TCR Abundance Explorer.
+
+Provides all shared functions used across pages:
+- Data loading, column normalization, and validation
+- Clonotype sharing, network metrics, and similarity calculations
+- All Plotly figure builders (heatmaps, line plots, stacked flow, presence grids, chord diagrams)
+- PyVis interactive network HTML generation
+- VDJdb TCR-antigen annotation integration
+"""
+
 import io
 import json
 from pathlib import Path
@@ -64,6 +74,7 @@ MouseB,Lung,CD8,TCRA,CLN011,55,S4
 
 
 def load_example_dataframe() -> pd.DataFrame:
+    """Load the bundled example CSV dataset, or fall back to a hardcoded mini example."""
     example_path_candidates = [
         Path(EXAMPLE_DATASET_FILENAME),
         Path(__file__).resolve().parent / EXAMPLE_DATASET_FILENAME,
@@ -75,6 +86,7 @@ def load_example_dataframe() -> pd.DataFrame:
 
 
 def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Map variant column names to canonical names using CANONICAL_COLUMNS."""
     mapping: Dict[str, str] = {}
     lower_cols = {col.lower(): col for col in df.columns}
     for canonical, options in CANONICAL_COLUMNS.items():
@@ -87,11 +99,13 @@ def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
 
 
 def validate_columns(df: pd.DataFrame) -> Tuple[bool, List[str]]:
+    """Check that all required columns are present after normalization."""
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     return len(missing) == 0, missing
 
 
 def classify_cd4_cd8(cell_type: str) -> str:
+    """Classify a cell type string as 'CD4', 'CD8', or 'Other' using word-boundary regex."""
     upper = str(cell_type).upper()
     if re.search(r"\bCD8\b", upper):
         return "CD8"
@@ -101,6 +115,11 @@ def classify_cd4_cd8(cell_type: str) -> str:
 
 
 def get_organ_cell_order(df: pd.DataFrame, sort_mode: str) -> List[str]:
+    """Return an ordered list of organ|cells groups.
+
+    'organ' mode: alphabetical sort.
+    'trm' mode: sort by cell type prefix, then organ (for TRM-focused layouts).
+    """
     if df.empty:
         return []
     if "organ_cell" not in df.columns:
@@ -151,6 +170,10 @@ def build_organ_cell_clonotype_edges(
     top_clonotypes: List[str],
     min_edge_abundance: float,
 ) -> pd.DataFrame:
+    """Build a DataFrame of organ|cells-to-clonotype edges with summed abundances.
+
+    Filters to the provided top clonotypes and applies a minimum abundance threshold.
+    """
     filtered = df[df["clonotype"].isin(top_clonotypes)].copy()
     edge_df = filtered.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"].sum()
     edge_df["abundance"] = pd.to_numeric(edge_df["abundance"], errors="coerce").fillna(0)
@@ -161,6 +184,13 @@ def build_organ_cell_clonotype_edges(
 def calculate_organ_cell_sharing(
     edge_df: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Compute clonotype sharing between organ|cells groups.
+
+    Returns:
+        pair_df: pairwise shared clonotype counts between organ|cells groups.
+        organ_cell_summary: per-group total shared + unique clonotype counts.
+        shared_matrix: organ|cells x organ|cells presence co-occurrence matrix.
+    """
     if edge_df.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -227,6 +257,7 @@ def build_highlighted_tick_labels(
     selected_category: str,
     highlight_color: str = SELECTED_ORGAN_CELL_COLOR,
 ) -> List[str]:
+    """Wrap the selected category in an HTML span with a highlight color for Plotly tick labels."""
     tick_labels: List[str] = []
     for category in categories:
         if category == selected_category:
@@ -250,6 +281,11 @@ def build_organ_cell_clonotype_network_html(
     physics_mode: str,
     node_font_size: int,
 ) -> str:
+    """Generate an interactive PyVis (vis.js) HTML network of organ|cells and clonotype nodes.
+
+    Organ|cells nodes are placed on an outer ring, clonotype nodes on an inner ring.
+    Edge widths are proportional to abundance. Returns an HTML string for embedding.
+    """
     if edge_df.empty:
         return ""
 
@@ -402,6 +438,7 @@ def build_organ_cell_clonotype_network_html(
 
 
 def superscript(exponent: int) -> str:
+    """Convert an integer to a superscript Unicode string (e.g., 3 → '³', -5 → '⁻⁵')."""
     sup_digits = {
         "0": "⁰",
         "1": "¹",
@@ -426,6 +463,7 @@ def superscript(exponent: int) -> str:
 
 
 def _hex_to_rgba(color: str, alpha: float) -> str:
+    """Convert a hex color string (#RRGGBB) or rgb() to rgba() with the given alpha."""
     color = str(color).strip()
     if color.startswith("#") and len(color) == 7:
         r = int(color[1:3], 16)
@@ -438,6 +476,7 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
 
 
 def build_clonotype_color_map(clonotypes: List[str]) -> Dict[str, str]:
+    """Assign a stable color from a combined Plotly/Dark24/Alphabet/Set3 palette to each clonotype."""
     palette = (
         px.colors.qualitative.Plotly
         + px.colors.qualitative.Dark24
@@ -461,6 +500,11 @@ def build_stacked_clonotype_band_figure(
     aggregate_non_selected: bool = False,
     non_selected_label: str = "Other clonotypes",
 ) -> Optional[go.Figure]:
+    """Build a stacked bar figure with semi-transparent connecting bands between adjacent organ|cells bars.
+
+    Each selected clonotype gets a colored bar segment and a polygon band that connects
+    its top/bottom across consecutive x-axis positions, showing abundance flow.
+    """
     if lineage_df.empty:
         return None
 
@@ -639,6 +683,14 @@ def build_clonotype_presence_grid_figure(
     x_spacing: float = 0.62,
     row_categories: Optional[List[str]] = None,
 ) -> Optional[go.Figure]:
+    """Build a Kiki-style presence grid: rows = organ|cells, columns = clonotypes.
+
+    Red dot: clonotype is in the top-N of that row.
+    Blue dot: clonotype is present but not in the top-N of that row.
+    White/empty: clonotype is absent from that row.
+
+    Side annotations show R(ed)/B(lue)/T(otal) counts per row and per column.
+    """
     top_in_row_label = f"Top-{int(top_n)} in row"
     present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
     grid_df = build_clonotype_presence_grid_dataframe(
@@ -783,6 +835,13 @@ def build_clonotype_presence_grid_dataframe(
     row_categories: Optional[List[str]] = None,
     x_spacing: float = 0.62,
 ) -> pd.DataFrame:
+    """Build the underlying DataFrame for the Kiki presence grid.
+
+    Each row records (row_idx, col_idx, organ_cell, clonotype, status) where
+    status is one of 'Top-N in row', 'Present (not Top-N in row)', or 'Not present'.
+    The query_top_n parameter controls how many clonotypes to consider "present" per row
+    (use 'all' for unlimited, or a number to cap it).
+    """
     if df.empty or not selected_clonotypes:
         return pd.DataFrame()
 
@@ -860,6 +919,7 @@ def summarize_clonotype_presence_grid_counts(
     top_in_row_label: str,
     present_not_top_label: str,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate the presence grid into per-row and per-column Red/Blue/Total count summaries."""
     if grid_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -916,6 +976,7 @@ def build_clonotype_presence_count_histogram(
     selected_label: Optional[str] = None,
     show_clonotype_sequences: bool = True,
 ) -> Optional[go.Figure]:
+    """Build a grouped bar chart of Red/Blue/Total counts per row or per column from the presence grid summary."""
     if summary_df.empty:
         return None
 
@@ -992,6 +1053,10 @@ def build_aggregate_row_count_figure(
     top_n: int,
     selected_label: Optional[str] = None,
 ) -> Optional[go.Figure]:
+    """Aggregate row summaries across individuals into a grouped bar chart of median Red/Blue/Total counts.
+
+    Bars show the median across individuals; overlaid scatter dots show individual values.
+    """
     if not row_summaries:
         return None
 
@@ -1117,6 +1182,7 @@ def build_aggregate_row_count_figure(
 
 
 def render_clonotype_presence_grid_legend(top_n: int) -> None:
+    """Render a 3-column HTML legend for the Kiki presence grid (top-N, present, not present)."""
     legend_cols = st.columns(3)
     legend_items = [
         (f"Top-{int(top_n)} in row", "#d62728", "#7f1d1d"),
@@ -1142,6 +1208,10 @@ def render_plot_download_buttons(
     base_filename: str,
     key_prefix: str,
 ) -> None:
+    """Render two Streamlit download buttons (PNG and PDF) for a given Plotly figure.
+
+    Silently handles cases where Kaleido is not available for image export.
+    """
     safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", base_filename).strip("_") or "plot"
     png_bytes: Optional[bytes] = None
     pdf_bytes: Optional[bytes] = None
@@ -1179,6 +1249,9 @@ def calculate_network_metrics(
     edge_df: pd.DataFrame,
     organ_cell_summary: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Compute graph-theoretic metrics (degree, weighted degree, betweenness centrality)
+    for the organ|cells-clonotype bipartite network using NetworkX.
+    """
     if edge_df.empty:
         return pd.DataFrame()
 
@@ -1221,6 +1294,7 @@ def calculate_network_metrics(
 
 
 def _arc_positions(labels: List[str], start_deg: float, end_deg: float) -> Dict[str, Tuple[float, float]]:
+    """Generate (x, y) positions for labels along an arc from start_deg to end_deg on the unit circle."""
     if not labels:
         return {}
     if len(labels) == 1:
@@ -1240,6 +1314,11 @@ def build_entity_chord_figure(
     only_shared_clones: bool,
     max_clonotypes: int,
 ) -> Tuple[Optional[go.Figure], pd.DataFrame]:
+    """Build a chord-like diagram connecting organ|cells nodes (bottom arc) to clonotype nodes (top arc).
+
+    Bezier curves connect nodes with line widths proportional to abundance.
+    Returns (figure, chord_edges_df).
+    """
     if edge_df.empty:
         return None, pd.DataFrame()
 
@@ -1355,6 +1434,12 @@ def build_entity_chord_figure(
 def prepare_summary_line_data(
     df: pd.DataFrame, selected_clonotypes: List[str], lineage: str
 ) -> Tuple[pd.DataFrame, List[str], List[str]]:
+    """Prepare a long-format DataFrame for per-mouse, per-clonotype line plots within a single lineage.
+
+    Fills missing (mouse, organ_cell, clonotype) combinations with zero. Computes pool_pct
+    as percentage of that mouse's lineage total abundance.
+    Returns (lineage_plot, all_mice_list, organ_cells_list).
+    """
     all_mice = sorted(df["mouse"].unique())
     df_lineage = (
         df.assign(cd_group=df["cell_type"].apply(classify_cd4_cd8))
@@ -1399,6 +1484,7 @@ def prepare_summary_line_data(
 def calculate_mouse_cosine_similarity(
     df: pd.DataFrame, value_col: str = "abundance"
 ) -> pd.DataFrame:
+    """Compute pairwise cosine similarity between mice using (clonotype_rank, organ_cell) feature vectors."""
     if df.empty:
         return pd.DataFrame()
     if "clonotype_rank" not in df.columns:
@@ -1436,6 +1522,7 @@ def calculate_mouse_cosine_similarity(
 def calculate_mouse_correlation(
     df: pd.DataFrame, value_col: str = "abundance"
 ) -> pd.DataFrame:
+    """Compute pairwise Pearson correlation between mice using (clonotype_rank, organ_cell) feature vectors."""
     if df.empty:
         return pd.DataFrame()
     if "clonotype_rank" not in df.columns:
@@ -1458,6 +1545,7 @@ def calculate_mouse_correlation(
 
 
 def map_chain_to_vdjdb_gene(chain_value: str) -> Optional[str]:
+    """Map a TCR chain value to the VDJdb gene parameter ('TRA' or 'TRB'), or None if unrecognized."""
     value = str(chain_value).upper()
     if "TRA" in value or value.endswith("A"):
         return "TRA"
@@ -1466,8 +1554,13 @@ def map_chain_to_vdjdb_gene(chain_value: str) -> Optional[str]:
     return None
 
 
-def nucleotide_to_amino_acid_cdr3(sequence: str) -> str:
-    seq = str(sequence).strip().upper().replace("U", "T")
+def nucleotide_to_amino_acid_cdr3(seq: str) -> str:
+    """Translate a nucleotide CDR3 sequence to amino acids using the standard codon table.
+
+    If the input is already an amino-acid sequence (non-DNA characters), it is returned as-is.
+    Terminal stop codons are removed; internal stops cause the translation to be rejected.
+    Returns an empty string on failure.
+    """
     if not seq:
         return ""
 
@@ -1505,6 +1598,7 @@ def nucleotide_to_amino_acid_cdr3(sequence: str) -> str:
 
 
 def _vdjdb_post_search(payload: Dict[str, Any], timeout_seconds: int = 15) -> Dict[str, Any]:
+    """POST a search payload to the VDJdb API /search endpoint and return the parsed JSON response."""
     endpoint = f"{VDJDB_API_BASE_URL}/search"
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(
@@ -1520,6 +1614,7 @@ def _vdjdb_post_search(payload: Dict[str, Any], timeout_seconds: int = 15) -> Di
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def fetch_vdjdb_metadata() -> Dict[str, Any]:
+    """Fetch VDJdb column metadata (cached for 24 hours)."""
     endpoint = f"{VDJDB_API_BASE_URL}/meta"
     req = request.Request(endpoint, method="GET")
     with request.urlopen(req, timeout=15) as response:
@@ -1529,6 +1624,7 @@ def fetch_vdjdb_metadata() -> Dict[str, Any]:
 
 
 def _build_vdjdb_column_index(metadata: Dict[str, Any]) -> Dict[str, int]:
+    """Convert VDJdb metadata column list to a name-to-index mapping."""
     columns = metadata.get("columns", [])
     if not isinstance(columns, list):
         return {}
@@ -1542,6 +1638,7 @@ def _build_vdjdb_column_index(metadata: Dict[str, Any]) -> Dict[str, int]:
 def _extract_entry_by_candidates(
     entries: List[Any], index_by_name: Dict[str, int], candidates: List[str]
 ) -> str:
+    """Extract the first non-empty entry field matching one of the candidate column names."""
     for name in candidates:
         idx = index_by_name.get(name)
         if idx is None:
@@ -1554,6 +1651,7 @@ def _extract_entry_by_candidates(
 
 
 def _mode_or_empty(values: List[str]) -> str:
+    """Return the most frequent non-empty value, or empty string if none exist."""
     cleaned = [v for v in values if str(v).strip()]
     if not cleaned:
         return ""
@@ -1566,6 +1664,14 @@ def query_vdjdb_sequence(
     gene: str = "",
     allow_fuzzy_fallback: bool = False,
 ) -> Dict[str, Any]:
+    """Query VDJdb for a single CDR3 amino-acid sequence.
+
+    Returns a dict with match count, top gene/species/antigen/MHC, score,
+    and paired-chain CDR3 sequences. Results are cached with a 12-hour TTL.
+
+    If allow_fuzzy_fallback is True and no exact match is found, retries with a
+    sequence-edit-distance search (1 substitution/insertion/deletion).
+    """
     seq = str(sequence).strip().upper()
     if not seq:
         return {
@@ -1634,7 +1740,6 @@ def query_vdjdb_sequence(
     if not isinstance(rows, list):
         rows = []
     records_found = int(search_result.get("recordsFound", 0))
-
     try:
         metadata = fetch_vdjdb_metadata()
     except Exception:
@@ -1722,6 +1827,12 @@ def enrich_clonotypes_with_vdjdb(
     max_queries: int = 100,
     allow_fuzzy_fallback: bool = False,
 ) -> pd.DataFrame:
+    """Enrich a list of nucleotide clonotype sequences with VDJdb antigen annotations.
+
+    Translates each nucleotide CDR3 to amino acids, queries the VDJdb API,
+    and returns a DataFrame with match metadata (gene, species, antigen, MHC, score, paired chain).
+    Deduplicates identical sequences before querying and caches results server-side.
+    """
     unique_nt_sequences = list(
         dict.fromkeys([str(c).strip().upper() for c in clonotypes if str(c).strip()])
     )
@@ -1787,7 +1898,196 @@ def enrich_clonotypes_with_vdjdb(
     return pd.DataFrame(records)
 
 
+def _build_summary_lineage_abundance_figure(
+    lineage_df: pd.DataFrame,
+    selected_clonotypes: List[str],
+    sort_organ_cell: str,
+    log_axis_summary: bool,
+    normalize_topn_summary: bool,
+    selected_label: str,
+    lineage: str,
+) -> Optional[go.Figure]:
+    """Build a multi-mouse line plot for a single lineage (CD4 or CD8).
+
+    Each mouse gets a separate line per clonotype. Supports log10 y-axis with
+    dynamic per-(mouse, organ_cell) pseudo-zero imputation for missing values.
+    """
+    if lineage_df.empty or not selected_clonotypes:
+        return None
+
+    lineage_df = lineage_df.copy()
+    lineage_df["abundance_for_metric"] = lineage_df["abundance"].astype(float)
+    if normalize_topn_summary:
+        lineage_df["abundance_for_metric"] = np.where(
+            lineage_df["norm_topN"] > 0,
+            (lineage_df["abundance_for_metric"] / lineage_df["norm_topN"]) * 100.0,
+            0.0,
+        )
+
+    lineage_organ_cells = get_organ_cell_order(lineage_df, sort_organ_cell)
+    if not lineage_organ_cells:
+        return None
+
+    all_mice = sorted(lineage_df["mouse"].astype(str).unique())
+    lineage_pivot = lineage_df.pivot_table(
+        index=["clonotype", "mouse"],
+        columns=["organ_cell"],
+        values="abundance_for_metric",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+    ordered_columns = ["clonotype", "mouse", *lineage_organ_cells]
+    lineage_pivot = lineage_pivot.reindex(columns=ordered_columns, fill_value=0)
+    organ_cell_line = lineage_pivot.melt(
+        id_vars=["clonotype", "mouse"],
+        value_vars=lineage_organ_cells,
+        var_name="organ_cell",
+        value_name="abundance",
+    )
+    organ_cell_line["organ_cell"] = pd.Categorical(
+        organ_cell_line["organ_cell"],
+        categories=lineage_organ_cells,
+        ordered=True,
+    )
+    organ_cell_line = organ_cell_line.sort_values(
+        ["mouse", "clonotype", "organ_cell"],
+        kind="mergesort",
+    )
+    organ_cell_line["is_pseudo"] = False
+
+    if log_axis_summary:
+        positive_lineage = lineage_df[lineage_df["abundance_for_metric"] > 0].copy()
+        pseudo_by_group = (
+            positive_lineage.groupby(["mouse", "organ_cell"], as_index=False)[
+                "abundance_for_metric"
+            ]
+            .min()
+            .rename(columns={"abundance_for_metric": "pseudo_zero"})
+        )
+        pseudo_by_group["pseudo_zero"] = (
+            pseudo_by_group["pseudo_zero"] / (pseudo_by_group["pseudo_zero"] + 1)
+        )
+        organ_cell_line = organ_cell_line.merge(
+            pseudo_by_group,
+            on=["mouse", "organ_cell"],
+            how="left",
+        )
+
+        mouse_level_pseudo = (
+            positive_lineage.groupby("mouse", as_index=False)["abundance_for_metric"]
+            .min()
+            .rename(columns={"abundance_for_metric": "mouse_pseudo_zero"})
+        )
+        mouse_level_pseudo["mouse_pseudo_zero"] = (
+            mouse_level_pseudo["mouse_pseudo_zero"]
+            / (mouse_level_pseudo["mouse_pseudo_zero"] + 1)
+        )
+        lineage_min_positive = (
+            float(positive_lineage["abundance_for_metric"].min())
+            if not positive_lineage.empty
+            else np.nan
+        )
+        lineage_pseudo = (
+            lineage_min_positive / (lineage_min_positive + 1)
+            if not np.isnan(lineage_min_positive)
+            else float(np.finfo(float).tiny)
+        )
+        organ_cell_line = organ_cell_line.merge(
+            mouse_level_pseudo,
+            on="mouse",
+            how="left",
+        )
+        organ_cell_line["pseudo_zero"] = organ_cell_line["pseudo_zero"].fillna(
+            organ_cell_line["mouse_pseudo_zero"]
+        )
+        organ_cell_line["pseudo_zero"] = organ_cell_line["pseudo_zero"].fillna(
+            lineage_pseudo
+        )
+        organ_cell_line["is_pseudo"] = organ_cell_line["abundance"] <= 0
+        organ_cell_line["abundance"] = np.where(
+            organ_cell_line["abundance"] > 0,
+            organ_cell_line["abundance"],
+            organ_cell_line["pseudo_zero"],
+        )
+
+    cd_fig = px.line(
+        organ_cell_line,
+        x="organ_cell",
+        y="abundance",
+        color="mouse",
+        line_group="clonotype",
+        markers=True,
+        labels={
+            "organ_cell": "Organ/Cell",
+            "abundance": "Normalized % Pool Size" if normalize_topn_summary else "% Pool Size",
+            "mouse": "Individual",
+        },
+        title=f"{lineage} clonotype abundance across individuals for {selected_label}",
+        category_orders={
+            "organ_cell": lineage_organ_cells,
+            "mouse": all_mice,
+            "clonotype": selected_clonotypes,
+        },
+    )
+    yaxis_config = {
+        "title": "Normalized % Pool Size" if normalize_topn_summary else "% Pool Size",
+        "type": "log" if log_axis_summary else "linear",
+    }
+    if log_axis_summary:
+        tick_exponents = list(range(-5, 3))
+        yaxis_config.update(
+            {
+                "tickvals": [10 ** exp for exp in tick_exponents],
+                "ticktext": [
+                    "0" if exp == -5 else f"10{superscript(exp)}"
+                    for exp in tick_exponents
+                ],
+                "range": [tick_exponents[0], tick_exponents[-1]],
+            }
+        )
+    cd_fig.update_layout(height=420, yaxis=yaxis_config, xaxis_title="Organ/Cell")
+    cd_fig.update_xaxes(
+        tickmode="array",
+        tickvals=lineage_organ_cells,
+        ticktext=build_highlighted_tick_labels(lineage_organ_cells, selected_label),
+    )
+
+    pseudo_points = organ_cell_line[organ_cell_line["is_pseudo"]].copy()
+    if not pseudo_points.empty:
+        cd_fig.add_trace(
+            go.Scatter(
+                x=pseudo_points["organ_cell"],
+                y=pseudo_points["abundance"],
+                mode="markers",
+                marker={
+                    "symbol": "circle-open",
+                    "size": 11,
+                    "color": "#222222",
+                    "line": {"width": 1.5, "color": "#222222"},
+                },
+                name="Pseudo-0",
+                showlegend=True,
+                customdata=pseudo_points[["mouse", "clonotype"]].to_numpy(),
+                hovertemplate=(
+                    "Organ/Cell: %{x}<br>"
+                    "Value: %{y:.4g}<br>"
+                    "Mouse: %{customdata[0]}<br>"
+                    "Clonotype: %{customdata[1]}<br>"
+                    "Imputed from pseudo-0<extra></extra>"
+                ),
+            )
+        )
+
+    return cd_fig
+
+
 def load_dataset_from_sidebar() -> pd.DataFrame:
+    """Render the data-source controls in the sidebar and return the loaded/normalized DataFrame.
+
+    Supports bundled example dataset or user-uploaded CSV.
+    Normalizes column names, validates required columns, coerces types,
+    and creates the composite 'organ_cell' column.
+    """
     with st.sidebar:
         st.header("Data")
         use_example = st.checkbox("Use example dataset", value=True)

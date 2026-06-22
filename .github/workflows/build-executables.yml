@@ -1,0 +1,47 @@
+name: Build executables
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: |
+          uv sync --frozen
+
+      - name: Build one-file executable
+        run: |
+          export PYINSTALLER_CONFIG_DIR="${PWD}/.pyinstaller"
+          uv run --with pyinstaller pyinstaller --clean --noconfirm tcr_abundance_explorer.spec
+
+      - name: Upload artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TCRAbundanceExplorer-macos
+          path: dist/TCRAbundanceExplorer
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TCRAbundanceExplorer-windows
+          path: dist/TCRAbundanceExplorer.exe

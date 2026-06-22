@@ -1,6 +1,34 @@
-output.csv
 node_modules/
 dist/stlite/
 build/electron/
 build/pypackage/
 *.tsbuildinfo
+.venv
+lev.py
+hamming.py
+
+# --- System Files ---
+.DS_Store
+._*
+Thumbs.db
+
+# --- Python & Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.python-version
+.ruff_cache/
+.pytest_cache/
+
+# --- Build/Package Artifacts ---
+dist/
+build/
+*.egg-info/
+node_modules/
+*.tsbuildinfo
+
+# --- Data/Logs ---
+*.csv
+*.tsv
+*.log

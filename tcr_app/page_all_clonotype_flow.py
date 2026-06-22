@@ -1,4 +1,4 @@
-"""All-clonotype flow page — per-mouse stacked abundance flow across organ/cell groups.
+"""Clonotype flow by subject page — stacked abundance flow across organ/cell groups.
 
 For each selected mouse and lineage (CD4/CD8), ranks clonotypes per organ|cell row,
 selects the top-N union, and renders stacked bar/band flow figures showing how the
@@ -20,7 +20,7 @@ from tcr_app.core import (
 def run_all_clonotype_flow_page(df: pd.DataFrame) -> None:
     """Render per-mouse stacked flow plots for CD4 and CD8 lineages."""
     st.title("TCR Abundance Explorer")
-    st.subheader("Top-N flow per individual")
+    st.subheader("Clonotype flow by subject")
     st.markdown(
         """
     Per selected mouse, this page shows stacked clonotype abundance flow across organ|cell groups.

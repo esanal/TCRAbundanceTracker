@@ -22,22 +22,22 @@ def main() -> None:
     page = st.sidebar.radio(
         "Choose a page",
         (
-            "Per individual",
-            "Summary all individuals",
-            "Pooled organ|cell counts",
-            "All-clonotype flow",
+            "Single-subject by organ/cell",
+            "Cohort summary",
+            "Top-N clonotype summary",
+            "Clonotype flow by subject",
         ),
         index=0,
-        help="Switch between detailed view, cohort summary, and per-mouse all-clonotype flow.",
+        help="Switch between single-subject, cohort, top-N, and clonotype flow views.",
     )
 
     df = load_dataset_from_sidebar()
 
-    if page == "Per individual":
+    if page == "Single-subject by organ/cell":
         run_per_individual_page(df)
-    elif page == "Summary all individuals":
+    elif page == "Cohort summary":
         run_summary_all_page(df)
-    elif page == "Pooled organ|cell counts":
+    elif page == "Top-N clonotype summary":
         run_summary_all_individuals_pooled_page(df)
     else:
         run_all_clonotype_flow_page(df)

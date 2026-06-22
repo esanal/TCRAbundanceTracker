@@ -1029,7 +1029,7 @@ def build_clonotype_presence_count_histogram(
         category_orders={"count_type": ["Red", "Blue", "Total"]},
     )
     fig.update_layout(
-        title=f"{axis_label} counts",
+        title={"Row": "Organ/cell counts", "Column": "Clonotype counts"}.get(axis_label, f"{axis_label} counts"),
         height=360,
         margin={"l": 20, "r": 20, "t": 60, "b": 40},
         bargap=0.15,
@@ -1164,7 +1164,7 @@ def build_aggregate_row_count_figure(
             )
         )
     fig.update_layout(
-        title="Median counts across individuals",
+        title="Across-subject median counts",
         height=380,
         margin={"l": 20, "r": 20, "t": 60, "b": 40},
         bargap=0,

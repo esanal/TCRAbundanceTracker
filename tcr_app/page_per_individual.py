@@ -1,4 +1,4 @@
-"""Per-individual detailed analysis page for the TCR Abundance Explorer.
+"""Single-subject by organ/cell page — deep-dive into one mouse and chain.
 
 Provides a single-mouse, single-chain deep-dive with:
 - Top-N heatmap, CD4/CD8 line plots, PyVis network, chord diagram
@@ -42,7 +42,7 @@ from tcr_app.core import (
 def run_per_individual_page(df: pd.DataFrame) -> None:
     """Render the single-mouse analysis view with all visualizations."""
     st.title("TCR Abundance Explorer")
-    st.subheader("Per individual")
+    st.subheader("Single-subject by organ/cell")
 
     st.markdown(
         """

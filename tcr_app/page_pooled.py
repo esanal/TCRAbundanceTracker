@@ -1,4 +1,4 @@
-"""Pooled organ/cell counts page — batch-renders summary analyses for every organ/cell combination.
+"""Top-N clonotype summary page — batch-renders per-organ/cell top-N analyses.
 
 Iterates over all organ|cells pairs in a 2-column grid layout and reuses the shared
 render function from the summary page with pooled_only=True (no CD4/CD8 line plots,
@@ -19,7 +19,7 @@ from tcr_app.page_summary_all import _render_summary_subset_top_clonotype_sectio
 def run_summary_all_individuals_pooled_page(df: pd.DataFrame) -> None:
     """Render per-organ|cells pooled count summaries in a 2-column grid."""
     st.title("TCR Abundance Explorer")
-    st.subheader("Pooled Organ/Cell Counts Across Individuals")
+    st.subheader("Top-N clonotype summary")
     st.markdown(
         """
     Browse every organ|cell combination from the summary view and render the same

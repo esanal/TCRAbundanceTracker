@@ -1,11 +1,11 @@
-"""Summary-all-individuals page — cohort-level cross-mouse aggregate analysis.
+"""Cohort summary page — aggregate analysis across all subjects.
 
 Features:
 - Individual metrics table
-- CD4/CD8 line plots across organ/cell per individual
-- Cosine similarity and Pearson correlation matrices across individuals
-- Per-individual clonotype presence grids (Kiki plots)
-- Pooled organ/cell median count bar charts
+- CD4/CD8 line plots across organ/cell per subject
+- Cosine similarity and Pearson correlation matrices across subjects
+- Per-subject clonotype presence grids (Kiki plots)
+- Across-subject median count bar charts
 - VDJdb enrichment pipeline
 """
 
@@ -41,7 +41,7 @@ from tcr_app.core import (
 def run_summary_all_page(df: pd.DataFrame) -> None:
     """Render the cohort-level aggregate analysis view."""
     st.title("TCR Abundance Explorer")
-    st.subheader("Summary all individuals")
+    st.subheader("Cohort summary")
     st.markdown(
         """
     Aggregate of all individuals (or mice) to show largest n (selected below) clonotypes across the organ|subset groups.
@@ -953,7 +953,7 @@ def _render_summary_subset_top_clonotype_section(
             pooled_lineage_row_summaries[lineage] = lineage_row_summaries
 
     if pooled_lineage_row_summaries:
-        st.subheader("Pooled Organ/Cell Counts Across Individuals")
+        st.subheader("Across-subject median counts")
         st.caption(
             "Bars show the per-organ|cell median across individuals. "
             "Dots show the individual mouse values for red, blue, and total counts."

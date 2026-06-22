@@ -147,6 +147,9 @@ def run_all_clonotype_flow_page(df: pd.DataFrame) -> None:
                 stacked_flow_fig,
                 base_filename=f"all_clonotype_flow_{mouse_id}_{lineage}".replace(" ", "_"),
                 key_prefix=f"flow_{mouse_id}_{lineage}",
+                data=lineage_df,
+                data_filename=f"all_clonotype_flow_{mouse_id}_{lineage}.csv".replace(" ", "_"),
+                data_index=False,
             )
 
         st.markdown("---")

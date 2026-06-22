@@ -239,6 +239,8 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                     heatmap_fig,
                     base_filename=f"cosine_heatmap_{lineage}".replace(" ", "_"),
                     key_prefix=f"cosine_heatmap_{lineage}",
+                    data=similarity_df,
+                    data_filename=f"cosine_similarity_{lineage}.csv".replace(" ", "_"),
                 )
                 st.dataframe(similarity_df.round(4), width="stretch")
     else:
@@ -266,6 +268,8 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                     heatmap_fig,
                     base_filename=f"correlation_heatmap_{lineage}".replace(" ", "_"),
                     key_prefix=f"correlation_heatmap_{lineage}",
+                    data=similarity_df,
+                    data_filename=f"correlation_{lineage}.csv".replace(" ", "_"),
                 )
                 st.dataframe(similarity_df.round(4), width="stretch")
 
@@ -490,6 +494,9 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         summary_plot,
                         base_filename=f"cosine_summary_{lineage}".replace(" ", "_"),
                         key_prefix=f"cosine_summary_{lineage}",
+                        data=lineage_stats,
+                        data_filename=f"cosine_summary_{lineage}.csv".replace(" ", "_"),
+                        data_index=False,
                     )
         else:
             st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
@@ -600,6 +607,9 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         summary_plot,
                         base_filename=f"correlation_summary_{lineage}".replace(" ", "_"),
                         key_prefix=f"correlation_summary_{lineage}",
+                        data=lineage_stats,
+                        data_filename=f"correlation_summary_{lineage}.csv".replace(" ", "_"),
+                        data_index=False,
                     )
 
     st.subheader("Clonotype Presence Grid Across Organ/Cell")
@@ -699,6 +709,9 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                             f"clonotype_presence_grid_{lineage}_{mouse_id}_{subset_selected}"
                         ).replace(" ", "_"),
                         key_prefix=f"summary_grid_{lineage}_{mouse_id}",
+                        data=mouse_df,
+                        data_filename=f"presence_grid_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
+                        data_index=False,
                     )
                     summary_grid_counts = build_clonotype_presence_grid_dataframe(
                         df=mouse_df,
@@ -736,6 +749,9 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                                 row_hist_fig,
                                 base_filename=f"row_histogram_{lineage}_{mouse_id}_{subset_selected}".replace(" ", "_"),
                                 key_prefix=f"summary_row_hist_{lineage}_{mouse_id}",
+                                data=row_count_summary,
+                                data_filename=f"row_histogram_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
+                                data_index=False,
                             )
                     else:
                         with histogram_cols[0]:
@@ -747,6 +763,9 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                                 col_hist_fig,
                                 base_filename=f"col_histogram_{lineage}_{mouse_id}_{subset_selected}".replace(" ", "_"),
                                 key_prefix=f"summary_col_hist_{lineage}_{mouse_id}",
+                                data=col_count_summary,
+                                data_filename=f"col_histogram_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
+                                data_index=False,
                             )
                     else:
                         with histogram_cols[1]:
@@ -903,6 +922,9 @@ def _render_summary_subset_top_clonotype_section(
                         lineage_fig,
                         base_filename=f"lineage_abundance_{lineage}_{subset_selected}".replace(" ", "_"),
                         key_prefix=f"lineage_abundance_{lineage}",
+                        data=lineage_df,
+                        data_filename=f"lineage_abundance_{lineage}_{subset_selected}.csv".replace(" ", "_"),
+                        data_index=False,
                     )
 
     pooled_lineage_row_summaries: Dict[str, List[pd.DataFrame]] = {}
@@ -974,6 +996,9 @@ def _render_summary_subset_top_clonotype_section(
                     aggregate_row_fig,
                     base_filename=f"aggregate_row_count_{lineage}_{subset_selected}".replace(" ", "_"),
                     key_prefix=f"aggregate_row_{lineage}_{subset_selected}".replace(" ", "_"),
+                    data=pd.concat(lineage_summaries, ignore_index=True),
+                    data_filename=f"aggregate_row_count_{lineage}_{subset_selected}.csv".replace(" ", "_"),
+                    data_index=False,
                 )
     else:
         st.info("No pooled row summaries could be computed for this selection.")

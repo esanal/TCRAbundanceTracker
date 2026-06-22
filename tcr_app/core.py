@@ -1208,8 +1208,11 @@ def render_plot_download_buttons(
     fig: go.Figure,
     base_filename: str,
     key_prefix: str,
+    data: pd.DataFrame | None = None,
+    data_filename: str | None = None,
+    data_index: bool = True,
 ) -> None:
-    """Render two Streamlit download buttons (PNG and PDF) for a given Plotly figure.
+    """Render download buttons (PNG, PDF, and optionally CSV of the backing data).
 
     Silently handles cases where Kaleido is not available for image export.
     """
@@ -1236,8 +1239,9 @@ def render_plot_download_buttons(
     except Exception:
         pdf_bytes = None
 
-    png_col, pdf_col, _ = st.columns([1, 1, 6], gap="small")
-    with png_col:
+    col_widths = [1, 1, 1, 5] if data is not None else [1, 1, 6]
+    cols = st.columns(col_widths, gap="small")
+    with cols[0]:
         if png_bytes is not None:
             st.download_button(
                 "PNG",
@@ -1247,7 +1251,7 @@ def render_plot_download_buttons(
                 key=f"{key_prefix}_download_png",
                 use_container_width=True,
             )
-    with pdf_col:
+    with cols[1]:
         if pdf_bytes is not None:
             st.download_button(
                 "PDF",
@@ -1255,6 +1259,19 @@ def render_plot_download_buttons(
                 file_name=f"{safe_filename}.pdf",
                 mime="application/pdf",
                 key=f"{key_prefix}_download_pdf",
+                use_container_width=True,
+            )
+    if data is not None:
+        csv_buffer = io.StringIO()
+        data.to_csv(csv_buffer, index=data_index)
+        csv_filename = data_filename or f"{safe_filename}.csv"
+        with cols[2]:
+            st.download_button(
+                "CSV",
+                data=csv_buffer.getvalue(),
+                file_name=csv_filename,
+                mime="text/csv",
+                key=f"{key_prefix}_download_csv",
                 use_container_width=True,
             )
 

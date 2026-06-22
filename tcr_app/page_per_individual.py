@@ -147,6 +147,8 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         heatmap_fig,
         base_filename=f"abundance_heatmap_{mouse_selected}_{chain_selected}".replace(" ", "_"),
         key_prefix=f"heatmap_{mouse_selected}",
+        data=heatmap_pivot,
+        data_filename=f"abundance_heatmap_{mouse_selected}_{chain_selected}.csv".replace(" ", "_"),
     )
 
     st.subheader("Clonotype Abundance Line Plot: CD4 vs CD8")
@@ -298,6 +300,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             line_fig,
             base_filename=f"line_plot_{lineage}_{mouse_selected}".replace(" ", "_"),
             key_prefix=f"line_{lineage}",
+            data=organ_cell_line,
+            data_filename=f"line_plot_{lineage}_{mouse_selected}.csv".replace(" ", "_"),
+            data_index=False,
         )
 
 
@@ -404,6 +409,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             chord_fig,
             base_filename=f"chord_diagram_{mouse_selected}".replace(" ", "_"),
             key_prefix="chord",
+            data=chord_edges,
+            data_filename=f"chord_edges_{mouse_selected}.csv".replace(" ", "_"),
+            data_index=False,
         )
         st.caption(
             f"Chord edges shown: {len(chord_edges)} "
@@ -428,6 +436,8 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             shared_heatmap,
             base_filename=f"shared_clonotypes_heatmap_{mouse_selected}".replace(" ", "_"),
             key_prefix="shared_heatmap",
+            data=shared_matrix,
+            data_filename=f"shared_clonotypes_{mouse_selected}.csv".replace(" ", "_"),
         )
 
     st.subheader("Network Metrics")
@@ -520,6 +530,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             stacked_flow_fig,
             base_filename=f"stacked_flow_{lineage}_{mouse_selected}".replace(" ", "_"),
             key_prefix=f"stacked_flow_{lineage}",
+            data=lineage_df,
+            data_filename=f"stacked_flow_{lineage}_{mouse_selected}.csv".replace(" ", "_"),
+            data_index=False,
         )
 
     st.subheader("Clonotype Presence Grid Across Organ/Cell")
@@ -599,6 +612,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             grid_fig,
             base_filename=f"clonotype_presence_grid_{lineage}_{top_n_scope}".replace(" ", "_"),
             key_prefix=f"lineage_grid_{lineage}",
+            data=lineage_grid_df,
+            data_filename=f"presence_grid_{lineage}_{top_n_scope}.csv".replace(" ", "_"),
+            data_index=False,
         )
         lineage_grid_counts = build_clonotype_presence_grid_dataframe(
             df=lineage_grid_df,
@@ -633,6 +649,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
                     row_hist_fig,
                     base_filename=f"row_histogram_{lineage}_{mouse_selected}_{top_n_scope}".replace(" ", "_"),
                     key_prefix=f"row_hist_{lineage}",
+                    data=row_count_summary,
+                    data_filename=f"row_histogram_{lineage}_{mouse_selected}_{top_n_scope}.csv".replace(" ", "_"),
+                    data_index=False,
                 )
         else:
             with histogram_cols[0]:
@@ -644,6 +663,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
                     col_hist_fig,
                     base_filename=f"col_histogram_{lineage}_{mouse_selected}_{top_n_scope}".replace(" ", "_"),
                     key_prefix=f"col_hist_{lineage}",
+                    data=col_count_summary,
+                    data_filename=f"col_histogram_{lineage}_{mouse_selected}_{top_n_scope}.csv".replace(" ", "_"),
+                    data_index=False,
                 )
         else:
             with histogram_cols[1]:

@@ -58,14 +58,14 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         chain_selected = st.selectbox(
             "Chain", sorted(df["chain"].unique()))
 
-        organ_selected = st.multiselect(
-            "Organ", sorted(df["organ"].unique()), default=sorted(df["organ"].unique())
-        )
-        cell_selected = st.multiselect(
-            "Cell type",
-            sorted(df["cell_type"].unique()),
-            default=sorted(df["cell_type"].unique()),
-        )
+        mouse_data = df[
+            (df["mouse"] == mouse_selected) & (df["chain"] == chain_selected)
+        ]
+        organ_opts = sorted(mouse_data["organ"].unique())
+        cell_opts = sorted(mouse_data["cell_type"].unique())
+
+        organ_selected = st.multiselect("Organ", organ_opts, default=organ_opts)
+        cell_selected = st.multiselect("Cell type", cell_opts, default=cell_opts)
 
     filtered = df[
         (df["mouse"] == mouse_selected)

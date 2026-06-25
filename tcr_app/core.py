@@ -64,6 +64,15 @@ CODON_TABLE: Dict[str, str] = {
 }
 #EXAMPLE_DATASET_FILENAME = "test.abundance.1.csv"
 EXAMPLE_DATASET_FILENAME = "output.csv"
+
+EXAMPLE_DATASETS: Dict[str, Optional[str]] = {
+    "Bundled example (output.csv)": None,
+    "Mouse clonotypes": str(Path.home() / "Dropbox" / "Research" / "tissue_tcr" / "data" / "mouse.clonetypes.read_th_1.filtered.csv"),
+    "Human (DYNAMO)": str(Path.home() / "Dropbox" / "Research" / "tissue_tcr_human" / "data" / "human.clonetypes.read_th_1.DYNAMO.filtered.csv"),
+    "Human (HALLO)": str(Path.home() / "Dropbox" / "Research" / "tissue_tcr_human" / "data" / "human.clonetypes.read_th_1.HALLO.filtered.csv"),
+    "Human": str(Path.home() / "Dropbox" / "Research" / "tissue_tcr_human" / "data" / "human.clonetypes.read_th_1.filtered.csv"),
+}
+
 FALLBACK_EXAMPLE_CSV = """mouse,organ,cell_type,chain,clonotype,abundance,sample
 MouseA,Spleen,CD4,TCRB,CLN001,120,S1
 MouseA,Spleen,CD8,TCRB,CLN002,80,S1
@@ -74,16 +83,19 @@ MouseB,Lung,CD8,TCRA,CLN011,55,S4
 """
 
 
-def load_example_dataframe() -> pd.DataFrame:
-    """Load the bundled example CSV dataset, or fall back to a hardcoded mini example."""
-    example_path_candidates = [
-        Path(EXAMPLE_DATASET_FILENAME),
-        Path(__file__).resolve().parent / EXAMPLE_DATASET_FILENAME,
-    ]
-    for path in example_path_candidates:
-        if path.exists():
-            return pd.read_csv(path, low_memory=False)
-    return pd.read_csv(io.StringIO(FALLBACK_EXAMPLE_CSV), low_memory=False)
+def load_example_dataframe(dataset_key: str = "Bundled example (output.csv)") -> pd.DataFrame:
+    """Load an example dataset by key from EXAMPLE_DATASETS, or the bundled fallback."""
+    path = EXAMPLE_DATASETS.get(dataset_key)
+    if path is None:
+        example_path_candidates = [
+            Path(EXAMPLE_DATASET_FILENAME),
+            Path(__file__).resolve().parent / EXAMPLE_DATASET_FILENAME,
+        ]
+        for p in example_path_candidates:
+            if p.exists():
+                return pd.read_csv(p, low_memory=False)
+        return pd.read_csv(io.StringIO(FALLBACK_EXAMPLE_CSV), low_memory=False)
+    return pd.read_csv(path, low_memory=False)
 
 
 def normalize_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
@@ -2121,18 +2133,17 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
     """
     with st.sidebar:
         st.header("Data")
-        use_example = st.checkbox("Use example dataset", value=True)
+        dataset_options = ["None (upload your own file)"] + list(EXAMPLE_DATASETS.keys())
+        selected_dataset = st.selectbox(
+            "Choose example dataset", dataset_options, index=1
+        )
         uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
 
-    data_source = "__bundled_example__" if use_example else uploaded_file
+    use_example = selected_dataset != "None (upload your own file)"
 
     if use_example:
-        st.info(
-            f"Using the bundled example dataset ({EXAMPLE_DATASET_FILENAME}). "
-            "Uncheck 'Use example dataset' to upload a new file."
-        )
-
-    if not use_example and data_source is None:
+        st.info(f"Using dataset: {selected_dataset}")
+    elif uploaded_file is None:
         st.info("Upload a CSV file to begin.")
         if get_script_run_ctx() is None:
             raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
@@ -2140,9 +2151,9 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
 
     try:
         df = (
-            load_example_dataframe()
+            load_example_dataframe(selected_dataset)
             if use_example
-            else pd.read_csv(data_source, low_memory=False)
+            else pd.read_csv(uploaded_file, low_memory=False)
         )
     except Exception as exc:
         st.error(f"Unable to read file: {exc}")

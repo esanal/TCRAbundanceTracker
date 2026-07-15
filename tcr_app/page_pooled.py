@@ -14,26 +14,10 @@ from tcr_app.core import (
     get_organ_cell_order,
 )
 from tcr_app.page_summary_all import _render_summary_subset_top_clonotype_section
-from tcr_app.precomputed.load import load as load_precomputed
-
-
-def _get_precomputed() -> dict | None:
-    key = st.session_state.get("dataset_key", "")
-    if (
-        "precomputed" in st.session_state
-        and st.session_state.get("precomputed_key") == key
-    ):
-        return st.session_state["precomputed"]
-    results = load_precomputed(key)
-    st.session_state["precomputed"] = results
-    st.session_state["precomputed_key"] = key
-    return results
 
 
 def run_summary_all_individuals_pooled_page(df: pd.DataFrame) -> None:
     """Render per-organ|cells pooled count summaries in a 2-column grid."""
-    pre = _get_precomputed()
-
     st.title("TCR Abundance Explorer")
     st.subheader("Top-N clonotype summary")
     st.markdown(
@@ -125,5 +109,4 @@ def run_summary_all_individuals_pooled_page(df: pd.DataFrame) -> None:
                     log_axis_summary=log_axis_summary,
                     normalize_topn_summary=normalize_topn_summary,
                     pooled_only=True,
-                    pre=pre,
                 )

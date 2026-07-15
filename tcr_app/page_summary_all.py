@@ -11,7 +11,7 @@ Features:
 
 import math
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -36,7 +36,7 @@ from tcr_app.core import (
     render_plot_download_buttons,
     summarize_clonotype_presence_grid_counts,
 )
-from tcr_app.precomputed.load import load as load_precomputed
+
 
 
 def run_summary_all_page(df: pd.DataFrame) -> None:
@@ -179,16 +179,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
         filtered.groupby(["mouse", "organ_cell"])["abundance"]
         .transform(lambda x: x.nlargest(int(top_n)).sum())
     )
-    pre_key = st.session_state.get("dataset_key", "")
-    if (
-        "precomputed" in st.session_state
-        and st.session_state.get("precomputed_key") == pre_key
-    ):
-        pre = st.session_state["precomputed"]
-    else:
-        pre = load_precomputed(pre_key)
-        st.session_state["precomputed"] = pre
-        st.session_state["precomputed_key"] = pre_key
     topClones = _render_summary_subset_top_clonotype_section(
         filtered=filtered,
         subset_selected=subset_selected,
@@ -196,7 +186,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
         sort_organ_cell=sort_organ_cell,
         log_axis_summary=log_axis_summary,
         normalize_topn_summary=normalize_topn_summary,
-        pre=pre,
     )
 
     cosine_by_lineage: Dict[str, pd.DataFrame] = {}
@@ -288,29 +277,17 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
     all_selection_cosine_records: List[Dict[str, object]] = []
     all_selection_correlation_records: List[Dict[str, object]] = []
 
-    pre_all_mice_edge = None
-    if pre is not None:
-        pre_all_mice_edge = pre.get(f"{chain_selected}_all_mice_edge")
-
     for subset_option in organ_cell_options:
-        if pre_all_mice_edge is not None:
-            subset_totals = pre_all_mice_edge[pre_all_mice_edge["organ_cell"] == subset_option][["mouse", "clonotype", "abundance"]].copy()
-            subset_totals = subset_totals.sort_values(
+        subset_totals = (
+            filtered[filtered["organ_cell"] == subset_option]
+            .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
+            .sum()
+            .sort_values(
                 ["mouse", "abundance", "clonotype"],
                 ascending=[True, False, True],
                 kind="mergesort",
-            ).reset_index(drop=True)
-        else:
-            subset_totals = (
-                filtered[filtered["organ_cell"] == subset_option]
-                .groupby(["mouse", "clonotype"], as_index=False)["abundance"]
-                .sum()
-                .sort_values(
-                    ["mouse", "abundance", "clonotype"],
-                    ascending=[True, False, True],
-                    kind="mergesort",
-                )
             )
+        )
         if subset_totals.empty:
             continue
 
@@ -708,9 +685,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                             f"No {lineage} top clonotypes available for {mouse_id} in {subset_selected}."
                         )
                         continue
-                    pre_ot = None
-                    if pre is not None:
-                        pre_ot = pre.get(f"{chain_selected}_{mouse_id}_{lineage}_organ_cell_totals")
                     summary_grid_fig = build_clonotype_presence_grid_figure(
                         df=mouse_df,
                         selected_clonotypes=mouse_grid_clonotypes,
@@ -719,7 +693,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         selected_organ_cell=subset_selected,
                         show_clonotype_sequences=show_clonotype_sequences_summary,
                         row_categories=shared_summary_grid_rows,
-                        organ_cell_totals=pre_ot,
                     )
                     if summary_grid_fig is None:
                         st.info(f"No {lineage} clonotype presence grid available for {mouse_id}.")
@@ -743,7 +716,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                         top_n=int(top_n),
                         query_top_n=query_top_n_sum,
                         row_categories=shared_summary_grid_rows,
-                        organ_cell_totals=pre_ot,
                     )
                     row_count_summary, col_count_summary = summarize_clonotype_presence_grid_counts(
                         grid_df=summary_grid_counts,
@@ -836,49 +808,30 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
         )
 
     if enable_vdjdb:
-        pre_vdjdb = None
-        if pre is not None:
-            pre_vdjdb = pre.get(f"{chain_selected}_vdjdb_enriched")
-        if pre_vdjdb is not None and not pre_vdjdb.empty:
-            table_clonotypes = set(table_df["clonotype"].astype(str).str.strip().str.upper())
-            pre_vdjdb_filtered = pre_vdjdb[
-                pre_vdjdb["clonotype"].isin(table_clonotypes)
-            ].copy()
-            if not pre_vdjdb_filtered.empty:
-                table_df = table_df.merge(
-                    pre_vdjdb_filtered, left_on="clonotype", right_on="clonotype", how="left"
-                )
-                matched_n = int((pre_vdjdb_filtered["vdjdb_match_count"] > 0).sum())
-                st.caption(
-                    f"VDJdb (precomputed): {len(pre_vdjdb_filtered)} sequences; {matched_n} had at least one match."
-                )
-            else:
-                st.info("No clonotypes matched precomputed VDJdb enrichment.")
+        table_df["clonotype_lookup"] = table_df["clonotype"].astype(str).str.strip().str.upper()
+        with st.spinner("Querying VDJdb for clonotype annotations..."):
+            vdjdb_df = enrich_clonotypes_with_vdjdb(
+                clonotypes=table_df["clonotype_lookup"].tolist(),
+                chain_value=chain_selected,
+                max_queries=int(max_vdjdb_queries),
+                allow_fuzzy_fallback=allow_fuzzy_vdjdb,
+            )
+        if vdjdb_df.empty:
+            st.info("No clonotypes were sent to VDJdb.")
         else:
-            table_df["clonotype_lookup"] = table_df["clonotype"].astype(str).str.strip().str.upper()
-            with st.spinner("Querying VDJdb for clonotype annotations..."):
-                vdjdb_df = enrich_clonotypes_with_vdjdb(
-                    clonotypes=table_df["clonotype_lookup"].tolist(),
-                    chain_value=chain_selected,
-                    max_queries=int(max_vdjdb_queries),
-                    allow_fuzzy_fallback=allow_fuzzy_vdjdb,
+            vdjdb_df = vdjdb_df.rename(columns={"clonotype": "clonotype_lookup"})
+            table_df = table_df.merge(vdjdb_df, on="clonotype_lookup", how="left")
+            queried_n = int(vdjdb_df["clonotype_lookup"].nunique())
+            matched_n = int((vdjdb_df["vdjdb_match_count"] > 0).sum())
+            error_n = int(vdjdb_df["vdjdb_error"].astype(str).str.len().gt(0).sum())
+            st.caption(
+                f"VDJdb queried {queried_n} unique sequences; {matched_n} had at least one match."
+            )
+            if error_n > 0:
+                st.warning(
+                    f"VDJdb queries reported {error_n} errors. Table is shown with available results."
                 )
-            if vdjdb_df.empty:
-                st.info("No clonotypes were sent to VDJdb.")
-            else:
-                vdjdb_df = vdjdb_df.rename(columns={"clonotype": "clonotype_lookup"})
-                table_df = table_df.merge(vdjdb_df, on="clonotype_lookup", how="left")
-                queried_n = int(vdjdb_df["clonotype_lookup"].nunique())
-                matched_n = int((vdjdb_df["vdjdb_match_count"] > 0).sum())
-                error_n = int(vdjdb_df["vdjdb_error"].astype(str).str.len().gt(0).sum())
-                st.caption(
-                    f"VDJdb queried {queried_n} unique sequences; {matched_n} had at least one match."
-                )
-                if error_n > 0:
-                    st.warning(
-                        f"VDJdb queries reported {error_n} errors. Table is shown with available results."
-                    )
-            table_df = table_df.drop(columns=["clonotype_lookup"], errors="ignore")
+        table_df = table_df.drop(columns=["clonotype_lookup"], errors="ignore")
 
     st.dataframe(table_df, width="stretch")
 
@@ -891,7 +844,6 @@ def _render_summary_subset_top_clonotype_section(
     log_axis_summary: bool,
     normalize_topn_summary: bool,
     pooled_only: bool = False,
-    pre: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Render CD4/CD8 line plots and pooled count bar charts for a single organ|cells selection.
 
@@ -981,7 +933,6 @@ def _render_summary_subset_top_clonotype_section(
             lineage_filtered_summary, sort_organ_cell
         )
         lineage_row_summaries: List[pd.DataFrame] = []
-        chain_val = str(filtered["chain"].iloc[0]) if not filtered.empty else ""
         for mouse_id in sorted(lineage_filtered_summary["mouse"].unique()):
             mouse_df = lineage_filtered_summary[
                 lineage_filtered_summary["mouse"] == mouse_id
@@ -1003,16 +954,12 @@ def _render_summary_subset_top_clonotype_section(
             )
             if not mouse_grid_clonotypes:
                 continue
-            pre_ot = None
-            if pre is not None and chain_val:
-                pre_ot = pre.get(f"{chain_val}_{mouse_id}_{lineage}_organ_cell_totals")
             summary_grid_counts = build_clonotype_presence_grid_dataframe(
                 df=mouse_df,
                 selected_clonotypes=mouse_grid_clonotypes,
                 top_n=subset_top_n,
                 query_top_n="all",
                 row_categories=shared_summary_grid_rows,
-                organ_cell_totals=pre_ot,
             )
             row_count_summary, _ = summarize_clonotype_presence_grid_counts(
                 grid_df=summary_grid_counts,

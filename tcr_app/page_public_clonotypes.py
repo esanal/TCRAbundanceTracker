@@ -14,25 +14,6 @@ import pandas as pd
 from streamlit.components.v1 import html
 
 from tcr_app.core import build_public_clonotype_network_html, enrich_clonotypes_with_vdjdb
-from tcr_app.precomputed.load import load as load_precomputed
-
-
-def _get_precomputed() -> Optional[dict]:
-    """Load precomputed data for the current dataset key from session state or disk."""
-    key = (
-        st.session_state.get("precomputed_key")
-        if "precomputed" in st.session_state
-        else None
-    )
-    if key is not None:
-        return st.session_state["precomputed"]
-    if "dataset_name" in st.session_state:
-        pre = load_precomputed(st.session_state["dataset_name"])
-        if pre is not None:
-            st.session_state["precomputed"] = pre
-            st.session_state["precomputed_key"] = st.session_state["dataset_name"]
-        return pre
-    return None
 
 
 def run_public_clonotypes_page(df: pd.DataFrame) -> None:
@@ -220,22 +201,6 @@ def _enrich_with_vdjdb(
     )
     if not unique_clonos:
         return pd.DataFrame()
-
-    pre = _get_precomputed()
-    if pre is not None:
-        pre_vdjdb = pre.get(f"{chain_value}_vdjdb_enriched")
-        if pre_vdjdb is not None and not pre_vdjdb.empty:
-            clono_set = set(unique_clonos)
-            pre_vdjdb_filtered = pre_vdjdb[pre_vdjdb["clonotype"].isin(clono_set)].copy()
-            if not pre_vdjdb_filtered.empty:
-                matched_n = int((pre_vdjdb_filtered["vdjdb_match_count"] > 0).sum())
-                st.caption(
-                    f"VDJdb (precomputed): {len(pre_vdjdb_filtered)} sequences; "
-                    f"{matched_n} had at least one match."
-                )
-                return pre_vdjdb_filtered
-            st.info("No clonotypes matched precomputed VDJdb enrichment.")
-            return pd.DataFrame()
 
     max_q = min(max_queries, len(unique_clonos))
     with st.spinner("Querying VDJdb for clonotype annotations..."):

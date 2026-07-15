@@ -696,7 +696,6 @@ def build_clonotype_presence_grid_figure(
     show_clonotype_sequences: bool = True,
     x_spacing: float = 0.62,
     row_categories: Optional[List[str]] = None,
-    organ_cell_totals: Optional[pd.DataFrame] = None,
 ) -> Optional[go.Figure]:
     """Build a Kiki-style presence grid: rows = organ|cells, columns = clonotypes.
 
@@ -705,8 +704,6 @@ def build_clonotype_presence_grid_figure(
     White/empty: clonotype is absent from that row.
 
     Side annotations show R(ed)/B(lue)/T(otal) counts per row and per column.
-    When organ_cell_totals is provided (precomputed groupby sum), the internal
-    groupby step is skipped for better performance.
     """
     top_in_row_label = f"Top-{int(top_n)} in row"
     present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
@@ -717,7 +714,6 @@ def build_clonotype_presence_grid_figure(
         query_top_n=query_top_n,
         row_categories=row_categories,
         x_spacing=x_spacing,
-        organ_cell_totals=organ_cell_totals,
     )
     if grid_df.empty:
         return None
@@ -852,7 +848,6 @@ def build_clonotype_presence_grid_dataframe(
     query_top_n: str,
     row_categories: Optional[List[str]] = None,
     x_spacing: float = 0.62,
-    organ_cell_totals: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build the underlying DataFrame for the Kiki presence grid.
 
@@ -860,29 +855,19 @@ def build_clonotype_presence_grid_dataframe(
     status is one of 'Top-N in row', 'Present (not Top-N in row)', or 'Not present'.
     The query_top_n parameter controls how many clonotypes to consider "present" per row
     (use 'all' for unlimited, or a number to cap it).
-
-    When organ_cell_totals is provided (precomputed groupby sum), the internal
-    groupby step is skipped for better performance.
     """
-    if (df.empty or not selected_clonotypes) and organ_cell_totals is None:
+    if df.empty or not selected_clonotypes:
         return pd.DataFrame()
 
-    if organ_cell_totals is not None:
-        organ_cell_totals = organ_cell_totals.sort_values(
+    organ_cell_totals = (
+        df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
+        .sum()
+        .sort_values(
             ["organ_cell", "abundance", "clonotype"],
             ascending=[True, False, True],
             kind="mergesort",
-        ).reset_index(drop=True)
-    else:
-        organ_cell_totals = (
-            df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
-            .sum()
-            .sort_values(
-                ["organ_cell", "abundance", "clonotype"],
-                ascending=[True, False, True],
-                kind="mergesort",
-            )
         )
+    )
     row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
     row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
     if query_top_n == "all":

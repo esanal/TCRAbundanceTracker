@@ -37,10 +37,25 @@ from tcr_app.core import (
     render_plot_download_buttons,
     summarize_clonotype_presence_grid_counts,
 )
+from tcr_app.precomputed.load import load as load_precomputed
+
+
+def _get_precomputed() -> dict | None:
+    key = st.session_state.get("dataset_key", "")
+    if (
+        "precomputed" in st.session_state
+        and st.session_state.get("precomputed_key") == key
+    ):
+        return st.session_state["precomputed"]
+    results = load_precomputed(key)
+    st.session_state["precomputed"] = results
+    st.session_state["precomputed_key"] = key
+    return results
 
 
 def run_per_individual_page(df: pd.DataFrame) -> None:
     """Render the single-mouse analysis view with all visualizations."""
+
     st.title("TCR Abundance Explorer")
     st.subheader("Single-subject by organ/cell")
 
@@ -349,11 +364,22 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
     gravity = DEFAULT_GRAVITY
     spring_length = DEFAULT_SPRING_LENGTH
 
-    edge_df = build_organ_cell_clonotype_edges(
-        filtered,
-        selected_clonotypes,
-        min_edge_abundance=min_edge_abundance,
-    )
+    pre = _get_precomputed()
+    pre_edge = None
+    if pre is not None:
+        pre_key = f"{chain_selected}_{mouse_selected}"
+        pre_pivot = pre.get(f"{pre_key}_edge_pivot")
+        if pre_pivot is not None:
+            sel_oc = filtered["organ_cell"].unique().tolist()
+            pre_f = pre_pivot[pre_pivot["organ_cell"].isin(sel_oc)]
+            pre_f = pre_f[pre_f["clonotype"].isin(selected_clonotypes)]
+            pre_edge = pre_f[pre_f["abundance"] >= min_edge_abundance].copy()
+    if pre_edge is not None:
+        edge_df = pre_edge
+    else:
+        edge_df = build_organ_cell_clonotype_edges(
+            filtered, selected_clonotypes, min_edge_abundance=min_edge_abundance,
+        )
     pair_df, organ_cell_summary, shared_matrix = calculate_organ_cell_sharing(edge_df)
     selected_metric_node = st.session_state.get("network_metrics_selected_node")
 

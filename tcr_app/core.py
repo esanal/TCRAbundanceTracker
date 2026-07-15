@@ -9,6 +9,7 @@ Provides all shared functions used across pages:
 """
 import copy
 import io
+from collections import defaultdict
 
 import json
 from pathlib import Path
@@ -695,6 +696,7 @@ def build_clonotype_presence_grid_figure(
     show_clonotype_sequences: bool = True,
     x_spacing: float = 0.62,
     row_categories: Optional[List[str]] = None,
+    organ_cell_totals: Optional[pd.DataFrame] = None,
 ) -> Optional[go.Figure]:
     """Build a Kiki-style presence grid: rows = organ|cells, columns = clonotypes.
 
@@ -703,6 +705,8 @@ def build_clonotype_presence_grid_figure(
     White/empty: clonotype is absent from that row.
 
     Side annotations show R(ed)/B(lue)/T(otal) counts per row and per column.
+    When organ_cell_totals is provided (precomputed groupby sum), the internal
+    groupby step is skipped for better performance.
     """
     top_in_row_label = f"Top-{int(top_n)} in row"
     present_not_top_label = f"Present (not Top-{int(top_n)} in row)"
@@ -713,6 +717,7 @@ def build_clonotype_presence_grid_figure(
         query_top_n=query_top_n,
         row_categories=row_categories,
         x_spacing=x_spacing,
+        organ_cell_totals=organ_cell_totals,
     )
     if grid_df.empty:
         return None
@@ -847,6 +852,7 @@ def build_clonotype_presence_grid_dataframe(
     query_top_n: str,
     row_categories: Optional[List[str]] = None,
     x_spacing: float = 0.62,
+    organ_cell_totals: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build the underlying DataFrame for the Kiki presence grid.
 
@@ -854,19 +860,29 @@ def build_clonotype_presence_grid_dataframe(
     status is one of 'Top-N in row', 'Present (not Top-N in row)', or 'Not present'.
     The query_top_n parameter controls how many clonotypes to consider "present" per row
     (use 'all' for unlimited, or a number to cap it).
+
+    When organ_cell_totals is provided (precomputed groupby sum), the internal
+    groupby step is skipped for better performance.
     """
-    if df.empty or not selected_clonotypes:
+    if (df.empty or not selected_clonotypes) and organ_cell_totals is None:
         return pd.DataFrame()
 
-    organ_cell_totals = (
-        df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
-        .sum()
-        .sort_values(
+    if organ_cell_totals is not None:
+        organ_cell_totals = organ_cell_totals.sort_values(
             ["organ_cell", "abundance", "clonotype"],
             ascending=[True, False, True],
             kind="mergesort",
+        ).reset_index(drop=True)
+    else:
+        organ_cell_totals = (
+            df.groupby(["organ_cell", "clonotype"], as_index=False)["abundance"]
+            .sum()
+            .sort_values(
+                ["organ_cell", "abundance", "clonotype"],
+                ascending=[True, False, True],
+                kind="mergesort",
+            )
         )
-    )
     row_topn = organ_cell_totals.groupby("organ_cell").head(int(top_n)).copy()
     row_topn_map = row_topn.groupby("organ_cell")["clonotype"].apply(set).to_dict()
     if query_top_n == "all":
@@ -2124,12 +2140,244 @@ def _build_summary_lineage_abundance_figure(
     return cd_fig
 
 
+def build_public_clonotype_network_html(
+    df: pd.DataFrame,
+    min_individuals: int = 2,
+    max_clonotypes: int = 100,
+    show_clonotype_labels: bool = False,
+    node_font_size: int = 16,
+    physics_mode: str = "No physics",
+    gravity: int = -300,
+    spring_length: int = 200,
+) -> str:
+    """Build a 3-level hierarchical PyVis network showing public clonotypes shared between individuals.
+
+    Levels: Individual (top) → Organ → Clonotype (bottom).
+    The user picks cell subsets via sidebar filters; they are not nodes.
+    Only clonotypes present in >= min_individuals mice are shown.
+    Shared clonotypes appear as a single red node with edges from multiple parent organs.
+    Returns an HTML string for embedding in Streamlit.
+    """
+    if df.empty:
+        return ""
+
+    clono_mouse_counts = df.groupby("clonotype")["mouse"].nunique()
+    public_clonos = clono_mouse_counts[clono_mouse_counts >= min_individuals].index.tolist()
+    if not public_clonos:
+        return ""
+
+    public_df = df[df["clonotype"].isin(public_clonos)].copy()
+    if len(public_clonos) > max_clonotypes:
+        top_clonos = clono_mouse_counts[public_clonos].nlargest(max_clonotypes).index.tolist()
+        public_df = public_df[public_df["clonotype"].isin(top_clonos)]
+
+    def _ind_id(m: str) -> str: return f"i__{m}"
+    def _org_id(m: str, o: str) -> str: return f"o__{m}__{o}"
+    def _clo_id(cl: str) -> str: return f"c__{cl}"
+
+    individuals = sorted(public_df["mouse"].unique())
+    mouse_organs: Dict[str, List[str]] = {}
+    for m in individuals:
+        mouse_organs[m] = sorted(public_df[public_df["mouse"] == m]["organ"].unique())
+
+    organ_clonos: Dict[Tuple[str, str], List[str]] = {}
+    for m, org in [(m, o) for m in individuals for o in mouse_organs[m]]:
+        key = (m, org)
+        organ_clonos[key] = sorted(
+            public_df[
+                (public_df["mouse"] == m) & (public_df["organ"] == org)
+            ]["clonotype"].unique()
+        )
+
+    all_clonotypes = sorted(public_df["clonotype"].unique())
+
+    max_at_level = max(
+        len(individuals),
+        sum(len(v) for v in mouse_organs.values()),
+        len(all_clonotypes),
+    )
+    x_gap = max(160, min(250, 2000 / max(max_at_level, 1)))
+    y_levels = {"individual": -220, "organ": -40, "clonotype": 200}
+
+    node_positions: Dict[str, Tuple[float, float]] = {}
+
+    def _place_children(px: float, child_ids: List[str], yl: float) -> None:
+        if not child_ids:
+            return
+        tw = (len(child_ids) - 1) * x_gap
+        sx = px - tw / 2
+        for i, cid in enumerate(child_ids):
+            node_positions[cid] = (sx + i * x_gap, yl)
+
+    for i, m in enumerate(individuals):
+        tw = (len(individuals) - 1) * x_gap
+        sx = -tw / 2
+        node_positions[_ind_id(m)] = (sx + i * x_gap, y_levels["individual"])
+
+    for m in individuals:
+        px, _ = node_positions[_ind_id(m)]
+        org_ids = [_org_id(m, o) for o in mouse_organs[m]]
+        _place_children(px, org_ids, y_levels["organ"])
+
+    clono_parents: Dict[str, List[str]] = defaultdict(list)
+    for (m, org), clist in organ_clonos.items():
+        for cl in clist:
+            clono_parents[cl].append(_org_id(m, org))
+
+    for cl in all_clonotypes:
+        parent_ids = clono_parents.get(cl, [])
+        xs = [node_positions[pid][0] for pid in parent_ids if pid in node_positions]
+        avg_x = sum(xs) / len(xs) if xs else 0.0
+        node_positions[_clo_id(cl)] = (avg_x, y_levels["clonotype"])
+
+    net = Network(height="650px", width="100%", bgcolor="#ffffff", font_color="#222222")
+    physics_enabled = physics_mode != "No physics"
+
+    def make_physics_config() -> Dict[str, object]:
+        base = {
+            "enabled": physics_enabled,
+            "solver": "barnesHut"
+            if physics_mode != "Force Atlas 2"
+            else "forceAtlas2Based",
+            "barnesHut": {
+                "gravitationalConstant": gravity,
+                "centralGravity": 0.3,
+                "springLength": spring_length,
+                "avoidOverlap": 0.5,
+            },
+        }
+        if "Weak repulsion" in physics_mode:
+            base["barnesHut"].update(
+                {
+                    "springLength": spring_length * 1.4,
+                    "gravitationalConstant": gravity * 0.65,
+                    "centralGravity": 0.08,
+                }
+            )
+        elif "Compact clusters" in physics_mode:
+            base["barnesHut"].update(
+                {
+                    "springLength": spring_length * 0.7,
+                    "centralGravity": 0.5,
+                    "avoidOverlap": 0.8,
+                }
+            )
+        elif "Force Atlas 2" in physics_mode:
+            base["forceAtlas2Based"] = {
+                "adjustSizes": False,
+                "centralGravity": 0.01,
+                "springLength": spring_length,
+                "springConstant": 0.01,
+                "damping": 0.6,
+            }
+        elif "No physics" in physics_mode:
+            base["barnesHut"].update({"gravitationalConstant": 0, "springLength": 0})
+        return base
+
+    for m in individuals:
+        nid = _ind_id(m)
+        x, y = node_positions.get(nid, (0, 0))
+        n_public = clono_mouse_counts[
+            public_df[public_df["mouse"] == m]["clonotype"].unique()
+        ].sum() if m in public_df["mouse"].values else 0
+        net.add_node(
+            nid, label=m,
+            title=f"Individual: {m}<br>Public clonotypes: {int(n_public)}",
+            color={"background": "#1f77b4", "border": "#0f4a7a"},
+            shape="ellipse",
+            font={"size": node_font_size, "color": "#ffffff"},
+            x=x, y=y, fixed=not physics_enabled, level=0, borderWidth=2,
+        )
+
+    for m, org in organ_clonos:
+        nid = _org_id(m, org)
+        if nid not in node_positions:
+            continue
+        x, y = node_positions[nid]
+        n_clonos = len(organ_clonos[(m, org)])
+        net.add_node(
+            nid, label=org,
+            title=f"Organ: {org}<br>Mouse: {m}<br>Clonotypes: {n_clonos}",
+            color={"background": "#2ca02c", "border": "#1a6b1a"},
+            shape="box",
+            font={"size": max(node_font_size - 2, 12), "color": "#ffffff"},
+            x=x, y=y, fixed=not physics_enabled, level=1, borderWidth=1,
+        )
+
+    for cl in all_clonotypes:
+        nid = _clo_id(cl)
+        if nid not in node_positions:
+            continue
+        x, y = node_positions[nid]
+        n_mice = int(clono_mouse_counts.get(cl, 0))
+        display_label = cl if show_clonotype_labels else " "
+        node_size = 10 + min(n_mice * 3, 30)
+        clono_font = node_font_size - 4 if show_clonotype_labels else 1
+        net.add_node(
+            nid, label=display_label,
+            title=f"Clonotype: {cl}<br>Shared by: {n_mice} individuals",
+            color={"background": "#d62728", "border": "#8b1a1a"},
+            shape="dot", size=node_size,
+            font={"size": max(clono_font, 1), "color": "#ffffff"},
+            x=x, y=y, fixed=not physics_enabled, level=2, borderWidth=1,
+        )
+
+    for m in individuals:
+        src = _ind_id(m)
+        for org in mouse_organs[m]:
+            tgt = _org_id(m, org)
+            if tgt in node_positions:
+                net.add_edge(src, tgt, width=2, color="#888888", title=f"{m} → {org}")
+
+    for (m, org), clist in organ_clonos.items():
+        src = _org_id(m, org)
+        for cl in clist:
+            tgt = _clo_id(cl)
+            if tgt in node_positions:
+                net.add_edge(src, tgt, width=1.5, color="#aaaaaa",
+                           title=f"{org} → {cl[:30]}...")
+
+    options = {
+        "physics": make_physics_config(),
+        "edges": {"color": {"inherit": False}, "smooth": {"type": "curvedCW", "roundness": 0.1}},
+        "interaction": {
+            "navigationButtons": True, "dragNodes": physics_enabled,
+            "dragView": True, "zoomView": True, "hover": True,
+        },
+        "layout": {"improvedLayout": False},
+    }
+    net.set_options(json.dumps(options))
+    return net.generate_html()
+
+
+def _load_and_normalize_dataset(selected_dataset: str, uploaded_file) -> pd.DataFrame:
+    """Read CSV, normalize columns, validate, coerce types. Not cached."""
+    if selected_dataset:
+        df = load_example_dataframe(selected_dataset)
+    else:
+        df = pd.read_csv(uploaded_file, low_memory=False)
+
+    df, _ = normalize_columns(df)
+    valid, missing = validate_columns(df)
+    if not valid:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}. Detected: {list(df.columns)}")
+
+    for col in ["mouse", "organ", "cell_type", "chain", "clonotype"]:
+        df[col] = df[col].astype(str)
+    df["abundance"] = pd.to_numeric(df["abundance"], errors="coerce").fillna(0.0)
+    df["organ_cell"] = df["organ"] + " | " + df["cell_type"]
+    return df
+
+
 def load_dataset_from_sidebar() -> pd.DataFrame:
     """Render the data-source controls in the sidebar and return the loaded/normalized DataFrame.
 
-    Supports bundled example dataset or user-uploaded CSV.
+    Supported bundled example dataset or user-uploaded CSV.
     Normalizes column names, validates required columns, coerces types,
     and creates the composite 'organ_cell' column.
+
+    The loaded DataFrame is cached in session_state to avoid re-reading CSV
+    on every Streamlit rerun. The cache is invalidated when the dataset changes.
     """
     with st.sidebar:
         st.header("Data")
@@ -2149,26 +2397,26 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
             raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
         st.stop()
 
+    dataset_key = selected_dataset if use_example else (uploaded_file.name if uploaded_file else "")
+
+    # Return cached DataFrame if the dataset hasn't changed
+    if (
+        "cached_df" in st.session_state
+        and st.session_state.get("cached_df_key") == dataset_key
+    ):
+        return st.session_state["cached_df"].copy()
+
     try:
-        df = (
-            load_example_dataframe(selected_dataset)
-            if use_example
-            else pd.read_csv(uploaded_file, low_memory=False)
+        df = _load_and_normalize_dataset(
+            selected_dataset if use_example else None,
+            uploaded_file,
         )
     except Exception as exc:
         st.error(f"Unable to read file: {exc}")
         st.stop()
 
-    df, _ = normalize_columns(df)
-    valid, missing = validate_columns(df)
-    if not valid:
-        st.error("Missing required columns: " + ", ".join(missing))
-        st.write("Detected columns:", list(df.columns))
-        st.stop()
+    st.session_state["cached_df"] = df
+    st.session_state["cached_df_key"] = dataset_key
+    st.session_state["dataset_key"] = dataset_key
 
-    for col in ["mouse", "organ", "cell_type", "chain", "clonotype"]:
-        df[col] = df[col].astype(str)
-    df["abundance"] = pd.to_numeric(df["abundance"], errors="coerce").fillna(0.0)
-    df["organ_cell"] = df["organ"] + " | " + df["cell_type"]
-
-    return df
+    return df.copy()

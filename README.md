@@ -12,8 +12,21 @@ https://tcrexplorer.streamlit.app/
 - Download filtered datasets for downstream analysis.
 - Organ|Cell group summaries. Organ|Cell based clonotype occurance of all individuals can be summarized.
 
-## Run local: use uv
-This project uses uv for fast and reliable dependency management.
+## Installation & Running
+
+You can run the app locally using either of the following methods:
+
+### uv (recommended)
+```bash
+uv sync
+uv run streamlit run app.py
+```
+
+### pip
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
 ## Expected columns in the data
 Each row is a clonotype with the expected columns:
@@ -29,12 +42,5 @@ Each row is a clonotype with the expected columns:
 In the current version, "CD4" or "CD8" strings are expected in the cell_type.
 Subset names should start with either CD4 or CD8 and a white space after is needed.
 After the white space further description of the subset is expected such as "CD4 Memory".
-
-## Run locally
-
-Install Streamlit (https://docs.streamlit.io/get-started/installation), requirements.txt and run via
-```bash
-streamlit run app.py
-```
 
 Upload your CSV file in the UI to begin exploring.

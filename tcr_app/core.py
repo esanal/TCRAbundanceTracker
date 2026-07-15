@@ -1277,7 +1277,7 @@ def render_plot_download_buttons(
                 file_name=f"{safe_filename}.png",
                 mime="image/png",
                 key=f"{key_prefix}_download_png",
-                use_container_width=True,
+                width='stretch',
             )
     with cols[1]:
         if pdf_bytes is not None:
@@ -1287,7 +1287,7 @@ def render_plot_download_buttons(
                 file_name=f"{safe_filename}.pdf",
                 mime="application/pdf",
                 key=f"{key_prefix}_download_pdf",
-                use_container_width=True,
+                width='stretch',
             )
     if data is not None:
         csv_buffer = io.StringIO()
@@ -1300,7 +1300,7 @@ def render_plot_download_buttons(
                 file_name=csv_filename,
                 mime="text/csv",
                 key=f"{key_prefix}_download_csv",
-                use_container_width=True,
+                width='stretch',
             )
 
 

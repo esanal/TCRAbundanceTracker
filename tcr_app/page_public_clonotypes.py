@@ -320,4 +320,4 @@ def _show_public_table(
         summary = summary.drop(columns=["clonotype_lookup", "clonotype_vdj"], errors="ignore")
         summary = summary.drop(columns=[c for c in summary.columns if c.endswith("_vdj")], errors="ignore")
 
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.dataframe(summary, width='stretch', hide_index=True)

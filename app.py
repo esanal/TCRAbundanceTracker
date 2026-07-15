@@ -13,6 +13,7 @@ from tcr_app.page_per_individual import run_per_individual_page
 from tcr_app.page_summary_all import run_summary_all_page
 from tcr_app.page_pooled import run_summary_all_individuals_pooled_page
 from tcr_app.page_all_clonotype_flow import run_all_clonotype_flow_page
+from tcr_app.page_public_clonotypes import run_public_clonotypes_page
 
 
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
@@ -52,9 +53,10 @@ def main() -> None:
             "Cohort summary",
             "Top-N clonotype summary",
             "Clonotype flow by subject",
+            "Public clonotypes",
         ),
         index=0,
-        help="Switch between single-subject, cohort, top-N, and clonotype flow views.",
+        help="Switch between single-subject, cohort, top-N, clonotype flow, and public clonotype views.",
     )
 
     df = load_dataset_from_sidebar()
@@ -65,6 +67,8 @@ def main() -> None:
         run_summary_all_page(df)
     elif page == "Top-N clonotype summary":
         run_summary_all_individuals_pooled_page(df)
+    elif page == "Public clonotypes":
+        run_public_clonotypes_page(df)
     else:
         run_all_clonotype_flow_page(df)
 

@@ -1229,6 +1229,9 @@ def render_plot_download_buttons(
 
     Silently handles cases where Kaleido is not available for image export.
     """
+    if not st.session_state.get("show_download_buttons", True):
+        return
+
     safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", base_filename).strip("_") or "plot"
 
     export_fig = copy.deepcopy(fig)
@@ -1524,43 +1527,6 @@ def prepare_summary_line_data(
     ).fillna(0.0)
     return lineage_plot, all_mice, organ_cells
 
-
-def calculate_mouse_cosine_similarity(
-    df: pd.DataFrame, value_col: str = "abundance"
-) -> pd.DataFrame:
-    """Compute pairwise cosine similarity between mice using (clonotype_rank, organ_cell) feature vectors."""
-    if df.empty:
-        return pd.DataFrame()
-    if "clonotype_rank" not in df.columns:
-        return pd.DataFrame()
-    if value_col not in df.columns:
-        return pd.DataFrame()
-
-    feature_matrix = df.pivot_table(
-        index="mouse",
-        columns=["clonotype_rank", "organ_cell"],
-        values=value_col,
-        aggfunc="sum",
-        fill_value=0.0,
-    ).sort_index()
-
-    if feature_matrix.empty or feature_matrix.shape[0] < 2:
-        return pd.DataFrame()
-
-    feature_values = feature_matrix.to_numpy(dtype=float)
-    norms = np.linalg.norm(feature_values, axis=1, keepdims=True)
-    normalized = np.divide(
-        feature_values,
-        norms,
-        out=np.zeros_like(feature_values, dtype=float),
-        where=norms != 0,
-    )
-    similarity = normalized @ normalized.T
-    return pd.DataFrame(
-        similarity,
-        index=feature_matrix.index,
-        columns=feature_matrix.index,
-    )
 
 
 def calculate_mouse_correlation(

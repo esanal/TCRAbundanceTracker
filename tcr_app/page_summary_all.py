@@ -27,7 +27,6 @@ from tcr_app.core import (
     build_clonotype_presence_grid_figure,
     build_highlighted_tick_labels,
     calculate_mouse_correlation,
-    calculate_mouse_cosine_similarity,
     classify_cd4_cd8,
     enrich_clonotypes_with_vdjdb,
     get_organ_cell_order,
@@ -188,93 +187,46 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
         normalize_topn_summary=normalize_topn_summary,
     )
 
-    cosine_by_lineage: Dict[str, pd.DataFrame] = {}
     correlation_by_lineage: Dict[str, pd.DataFrame] = {}
     for lineage in ["CD4", "CD8"]:
         lineage_df = topClones[topClones["cd_group"] == lineage].copy()
         if lineage_df.empty:
             continue
-        lineage_cosine = calculate_mouse_cosine_similarity(
-            lineage_df, value_col="abundance_for_metric"
-        )
         lineage_correlation = calculate_mouse_correlation(
             lineage_df, value_col="abundance_for_metric"
         )
-        if not lineage_cosine.empty:
-            cosine_by_lineage[lineage] = lineage_cosine
         if not lineage_correlation.empty:
             correlation_by_lineage[lineage] = lineage_correlation
 
-    summary_metric_view = st.selectbox(
-        "Similarity analysis to show",
-        ("Cosine", "Correlation"),
-        index=0,
-        help=(
-            "Choose which similarity metric section to display. "
-            "Both analyses are still computed and available."
-        ),
+    st.subheader("Correlation Across Individuals (Top Clones)")
+    st.caption(
+        "Pearson correlation is rank-based: each individual's vector uses "
+        "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
     )
-
-    if summary_metric_view == "Cosine":
-        st.subheader("Cosine Similarity Across Individuals (Top Clones)")
-        st.caption(
-            "Cosine similarity is rank-based: each individual's vector uses "
-            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
-        )
-        if not cosine_by_lineage:
-            st.info("At least two individuals with non-empty vectors are required to compute cosine similarity.")
-        else:
-            for lineage, similarity_df in cosine_by_lineage.items():
-                st.markdown(f"**{lineage} cosine matrix**")
-                heatmap_fig = px.imshow(
-                    similarity_df,
-                    zmin=0,
-                    zmax=1,
-                    color_continuous_scale="Blues",
-                    text_auto=".2f",
-                    labels={"x": "Individual", "y": "Individual", "color": "Cosine similarity"},
-                )
-                heatmap_fig.update_layout(height=420)
-                st.plotly_chart(heatmap_fig, width="stretch")
-                render_plot_download_buttons(
-                    heatmap_fig,
-                    base_filename=f"cosine_heatmap_{lineage}".replace(" ", "_"),
-                    key_prefix=f"cosine_heatmap_{lineage}",
-                    data=similarity_df,
-                    data_filename=f"cosine_similarity_{lineage}.csv".replace(" ", "_"),
-                )
-                st.dataframe(similarity_df.round(4), width="stretch")
+    if not correlation_by_lineage:
+        st.info("At least two individuals with non-empty vectors are required to compute correlation.")
     else:
-        st.subheader("Correlation Across Individuals (Top Clones)")
-        st.caption(
-            "Pearson correlation is rank-based: each individual's vector uses "
-            "(clonotype rank, organ/cell) abundance features from the CD4/CD8 plots."
-        )
-        if not correlation_by_lineage:
-            st.info("At least two individuals with non-empty vectors are required to compute correlation.")
-        else:
-            for lineage, similarity_df in correlation_by_lineage.items():
-                st.markdown(f"**{lineage} correlation matrix**")
-                heatmap_fig = px.imshow(
-                    similarity_df,
-                    zmin=-1,
-                    zmax=1,
-                    color_continuous_scale="Blues",
-                    text_auto=".2f",
-                    labels={"x": "Individual", "y": "Individual", "color": "Correlation"},
-                )
-                heatmap_fig.update_layout(height=420)
-                st.plotly_chart(heatmap_fig, width="stretch")
-                render_plot_download_buttons(
-                    heatmap_fig,
-                    base_filename=f"correlation_heatmap_{lineage}".replace(" ", "_"),
-                    key_prefix=f"correlation_heatmap_{lineage}",
-                    data=similarity_df,
-                    data_filename=f"correlation_{lineage}.csv".replace(" ", "_"),
-                )
-                st.dataframe(similarity_df.round(4), width="stretch")
+        for lineage, similarity_df in correlation_by_lineage.items():
+            st.markdown(f"**{lineage} correlation matrix**")
+            heatmap_fig = px.imshow(
+                similarity_df,
+                zmin=-1,
+                zmax=1,
+                color_continuous_scale="Blues",
+                text_auto=".2f",
+                labels={"x": "Individual", "y": "Individual", "color": "Correlation"},
+            )
+            heatmap_fig.update_layout(height=420)
+            st.plotly_chart(heatmap_fig, width="stretch")
+            render_plot_download_buttons(
+                heatmap_fig,
+                base_filename=f"correlation_heatmap_{lineage}".replace(" ", "_"),
+                key_prefix=f"correlation_heatmap_{lineage}",
+                data=similarity_df,
+                data_filename=f"correlation_{lineage}.csv".replace(" ", "_"),
+            )
+            st.dataframe(similarity_df.round(4), width="stretch")
 
-    all_selection_cosine_records: List[Dict[str, object]] = []
     all_selection_correlation_records: List[Dict[str, object]] = []
 
     for subset_option in organ_cell_options:
@@ -324,33 +276,6 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
             subset_lineage_df = subset_top_clones[
                 subset_top_clones["cd_group"] == lineage
             ].copy()
-            subset_cosine = calculate_mouse_cosine_similarity(
-                subset_lineage_df, value_col="abundance_for_metric"
-            )
-            if not subset_cosine.empty:
-                cos_values = subset_cosine.to_numpy(dtype=float)
-                if cos_values.shape[0] >= 2:
-                    cos_pairwise = cos_values[np.triu_indices(cos_values.shape[0], k=1)]
-                    cos_pairwise = cos_pairwise[~np.isnan(cos_pairwise)]
-                    if cos_pairwise.size > 0:
-                        mean_cosine = float(np.mean(cos_pairwise))
-                        if cos_pairwise.size > 1:
-                            std_cosine = float(np.std(cos_pairwise, ddof=1))
-                            cos_se = std_cosine / math.sqrt(cos_pairwise.size)
-                            cos_ci_radius = 1.96 * cos_se
-                        else:
-                            cos_ci_radius = 0.0
-                        all_selection_cosine_records.append(
-                            {
-                                "organ_cell": subset_option,
-                                "lineage": lineage,
-                                "mean_cosine": mean_cosine,
-                                "ci_low": max(0.0, mean_cosine - cos_ci_radius),
-                                "ci_high": min(1.0, mean_cosine + cos_ci_radius),
-                                "n_pairs": int(cos_pairwise.size),
-                            }
-                        )
-
             subset_correlation = calculate_mouse_correlation(
                 subset_lineage_df, value_col="abundance_for_metric"
             )
@@ -385,229 +310,118 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
         )
         lineage_colors = {"CD4": "#1f77b4", "CD8": "#ff7f0e"}
 
-        if summary_metric_view == "Cosine":
-            st.subheader("Cosine Similarity Across Individuals (All Organ/Cell Selections)")
-            st.caption(
-                "Single summary plot across all organ/cell selections. "
-                "Lines show mean pairwise mouse cosine similarity; shaded bands show 95% confidence ranges."
+        st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
+        st.caption(
+            "Single summary plot across all organ/cell selections. "
+            "Lines show mean pairwise mouse correlation; shaded bands show 95% confidence ranges."
+        )
+        if not all_selection_correlation_records:
+            st.info(
+                "No all-selection correlation matrices could be computed with the current filters."
             )
-            if not all_selection_cosine_records:
-                st.info(
-                    "No all-selection cosine matrices could be computed with the current filters."
-                )
-            else:
-                cosine_summary_df = pd.DataFrame(all_selection_cosine_records)
-                for lineage in ["CD4", "CD8"]:
-                    lineage_axis_options = get_organ_cell_order(
-                        filtered_with_lineage[
-                            filtered_with_lineage["cd_group"] == lineage
-                        ],
-                        sort_organ_cell,
-                    )
-                    if not lineage_axis_options:
-                        continue
-                    lineage_stats = cosine_summary_df[
-                        cosine_summary_df["lineage"] == lineage
-                    ].copy()
-                    if lineage_stats.empty:
-                        continue
-                    summary_plot = go.Figure()
-                    lineage_stats = lineage_stats[
-                        lineage_stats["organ_cell"].isin(lineage_axis_options)
-                    ].copy()
-                    if lineage_stats.empty:
-                        continue
-                    lineage_stats["organ_cell"] = pd.Categorical(
-                        lineage_stats["organ_cell"],
-                        categories=lineage_axis_options,
-                        ordered=True,
-                    )
-                    lineage_stats = lineage_stats.sort_values("organ_cell")
-                    x_values = lineage_stats["organ_cell"].astype(str).tolist()
-                    lower = lineage_stats["ci_low"].tolist()
-                    upper = lineage_stats["ci_high"].tolist()
-                    mean = lineage_stats["mean_cosine"].tolist()
-                    color = lineage_colors.get(lineage, "#444444")
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=upper,
-                            mode="lines",
-                            line={"width": 0},
-                            hoverinfo="skip",
-                            showlegend=False,
-                        )
-                    )
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=lower,
-                            mode="lines",
-                            line={"width": 0},
-                            fill="tonexty",
-                            fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
-                            if color.startswith("rgb(")
-                            else "rgba(31,119,180,0.18)"
-                            if lineage == "CD4"
-                            else "rgba(255,127,14,0.18)",
-                            hoverinfo="skip",
-                            showlegend=False,
-                        )
-                    )
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=mean,
-                            mode="lines+markers",
-                            line={"color": color, "width": 2},
-                            marker={"size": 7},
-                            customdata=lineage_stats[
-                                ["ci_low", "ci_high", "n_pairs"]
-                            ].to_numpy(),
-                            hovertemplate=(
-                                "Selection: %{x}<br>"
-                                "Mean cosine: %{y:.3f}<br>"
-                                "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
-                                "Pairs: %{customdata[2]}<extra>"
-                                + lineage
-                                + "</extra>"
-                            ),
-                        )
-                    )
-                    summary_plot.update_layout(
-                        height=420,
-                        title=f"{lineage} mean cosine similarity across selections",
-                        yaxis_title="Cosine similarity",
-                        xaxis_title="Organ/Cell selection",
-                        yaxis={"range": [0, 1]},
-                        showlegend=False,
-                    )
-                    summary_plot.update_xaxes(
-                        categoryorder="array",
-                        categoryarray=lineage_axis_options,
-                    )
-                    st.plotly_chart(summary_plot, width="stretch")
-                    render_plot_download_buttons(
-                        summary_plot,
-                        base_filename=f"cosine_summary_{lineage}".replace(" ", "_"),
-                        key_prefix=f"cosine_summary_{lineage}",
-                        data=lineage_stats,
-                        data_filename=f"cosine_summary_{lineage}.csv".replace(" ", "_"),
-                        data_index=False,
-                    )
         else:
-            st.subheader("Correlation Across Individuals (All Organ/Cell Selections)")
-            st.caption(
-                "Single summary plot across all organ/cell selections. "
-                "Lines show mean pairwise mouse correlation; shaded bands show 95% confidence ranges."
-            )
-            if not all_selection_correlation_records:
-                st.info(
-                    "No all-selection correlation matrices could be computed with the current filters."
+            correlation_summary_df = pd.DataFrame(all_selection_correlation_records)
+            for lineage in ["CD4", "CD8"]:
+                lineage_axis_options = get_organ_cell_order(
+                    filtered_with_lineage[
+                        filtered_with_lineage["cd_group"] == lineage
+                    ],
+                    sort_organ_cell,
                 )
-            else:
-                correlation_summary_df = pd.DataFrame(all_selection_correlation_records)
-                for lineage in ["CD4", "CD8"]:
-                    lineage_axis_options = get_organ_cell_order(
-                        filtered_with_lineage[
-                            filtered_with_lineage["cd_group"] == lineage
-                        ],
-                        sort_organ_cell,
-                    )
-                    if not lineage_axis_options:
-                        continue
-                    lineage_stats = correlation_summary_df[
-                        correlation_summary_df["lineage"] == lineage
-                    ].copy()
-                    if lineage_stats.empty:
-                        continue
-                    summary_plot = go.Figure()
-                    lineage_stats = lineage_stats[
-                        lineage_stats["organ_cell"].isin(lineage_axis_options)
-                    ].copy()
-                    if lineage_stats.empty:
-                        continue
-                    lineage_stats["organ_cell"] = pd.Categorical(
-                        lineage_stats["organ_cell"],
-                        categories=lineage_axis_options,
-                        ordered=True,
-                    )
-                    lineage_stats = lineage_stats.sort_values("organ_cell")
-                    x_values = lineage_stats["organ_cell"].astype(str).tolist()
-                    lower = lineage_stats["ci_low"].tolist()
-                    upper = lineage_stats["ci_high"].tolist()
-                    mean = lineage_stats["mean_correlation"].tolist()
-                    color = lineage_colors.get(lineage, "#444444")
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=upper,
-                            mode="lines",
-                            line={"width": 0},
-                            hoverinfo="skip",
-                            showlegend=False,
-                            name=f"{lineage} upper",
-                        )
-                    )
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=lower,
-                            mode="lines",
-                            line={"width": 0},
-                            fill="tonexty",
-                            fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
-                            if color.startswith("rgb(")
-                            else "rgba(31,119,180,0.18)"
-                            if lineage == "CD4"
-                            else "rgba(255,127,14,0.18)",
-                            hoverinfo="skip",
-                            showlegend=False,
-                            name=f"{lineage} CI",
-                        )
-                    )
-                    summary_plot.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=mean,
-                            mode="lines+markers",
-                            name=f"{lineage} mean",
-                            line={"color": color, "width": 2},
-                            marker={"size": 7},
-                            customdata=lineage_stats[
-                                ["ci_low", "ci_high", "n_pairs"]
-                            ].to_numpy(),
-                            hovertemplate=(
-                                "Selection: %{x}<br>"
-                                "Mean correlation: %{y:.3f}<br>"
-                                "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
-                                "Pairs: %{customdata[2]}<extra>"
-                                + lineage
-                                + "</extra>"
-                            ),
-                        )
-                    )
-                    summary_plot.update_layout(
-                        height=420,
-                        title=f"{lineage} mean correlation across selections",
-                        yaxis_title="Correlation",
-                        xaxis_title="Organ/Cell selection",
-                        yaxis={"range": [-1, 1]},
+                if not lineage_axis_options:
+                    continue
+                lineage_stats = correlation_summary_df[
+                    correlation_summary_df["lineage"] == lineage
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                summary_plot = go.Figure()
+                lineage_stats = lineage_stats[
+                    lineage_stats["organ_cell"].isin(lineage_axis_options)
+                ].copy()
+                if lineage_stats.empty:
+                    continue
+                lineage_stats["organ_cell"] = pd.Categorical(
+                    lineage_stats["organ_cell"],
+                    categories=lineage_axis_options,
+                    ordered=True,
+                )
+                lineage_stats = lineage_stats.sort_values("organ_cell")
+                x_values = lineage_stats["organ_cell"].astype(str).tolist()
+                lower = lineage_stats["ci_low"].tolist()
+                upper = lineage_stats["ci_high"].tolist()
+                mean = lineage_stats["mean_correlation"].tolist()
+                color = lineage_colors.get(lineage, "#444444")
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=upper,
+                        mode="lines",
+                        line={"width": 0},
+                        hoverinfo="skip",
                         showlegend=False,
+                        name=f"{lineage} upper",
                     )
-                    summary_plot.update_xaxes(
-                        categoryorder="array",
-                        categoryarray=lineage_axis_options,
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=lower,
+                        mode="lines",
+                        line={"width": 0},
+                        fill="tonexty",
+                        fillcolor=color.replace(")", ", 0.18)").replace("rgb", "rgba")
+                        if color.startswith("rgb(")
+                        else "rgba(31,119,180,0.18)"
+                        if lineage == "CD4"
+                        else "rgba(255,127,14,0.18)",
+                        hoverinfo="skip",
+                        showlegend=False,
+                        name=f"{lineage} CI",
                     )
-                    st.plotly_chart(summary_plot, width="stretch")
-                    render_plot_download_buttons(
-                        summary_plot,
-                        base_filename=f"correlation_summary_{lineage}".replace(" ", "_"),
-                        key_prefix=f"correlation_summary_{lineage}",
-                        data=lineage_stats,
-                        data_filename=f"correlation_summary_{lineage}.csv".replace(" ", "_"),
-                        data_index=False,
+                )
+                summary_plot.add_trace(
+                    go.Scatter(
+                        x=x_values,
+                        y=mean,
+                        mode="lines+markers",
+                        name=f"{lineage} mean",
+                        line={"color": color, "width": 2},
+                        marker={"size": 7},
+                        customdata=lineage_stats[
+                            ["ci_low", "ci_high", "n_pairs"]
+                        ].to_numpy(),
+                        hovertemplate=(
+                            "Selection: %{x}<br>"
+                            "Mean correlation: %{y:.3f}<br>"
+                            "95% CI: [%{customdata[0]:.3f}, %{customdata[1]:.3f}]<br>"
+                            "Pairs: %{customdata[2]}<extra>"
+                            + lineage
+                            + "</extra>"
+                        ),
                     )
+                )
+                summary_plot.update_layout(
+                    height=420,
+                    title=f"{lineage} mean correlation across selections",
+                    yaxis_title="Correlation",
+                    xaxis_title="Organ/Cell selection",
+                    yaxis={"range": [-1, 1]},
+                    showlegend=False,
+                )
+                summary_plot.update_xaxes(
+                    categoryorder="array",
+                    categoryarray=lineage_axis_options,
+                )
+                st.plotly_chart(summary_plot, width="stretch")
+                render_plot_download_buttons(
+                    summary_plot,
+                    base_filename=f"correlation_summary_{lineage}".replace(" ", "_"),
+                    key_prefix=f"correlation_summary_{lineage}",
+                    data=lineage_stats,
+                    data_filename=f"correlation_summary_{lineage}.csv".replace(" ", "_"),
+                    data_index=False,
+                )
 
     st.subheader("Clonotype Presence Grid Across Organ/Cell")
     st.caption(

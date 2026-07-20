@@ -32,3 +32,6 @@ node_modules/
 *.csv
 *.tsv
 *.log
+
+# --- Precomputed caches ---
+tcr_app/precomputed/datasets/

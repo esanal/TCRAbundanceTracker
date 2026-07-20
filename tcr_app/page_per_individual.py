@@ -677,8 +677,9 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
     st.subheader("Filtered Data")
     st.dataframe(filtered, width="stretch")
 
-    csv_buffer = io.StringIO()
-    filtered.to_csv(csv_buffer, index=False)
-    st.download_button(
-        "Download filtered data", csv_buffer.getvalue(), file_name="filtered_clonotypes.csv"
-    )
+    if st.session_state.get("show_download_buttons", True):
+        csv_buffer = io.StringIO()
+        filtered.to_csv(csv_buffer, index=False)
+        st.download_button(
+            "Download filtered data", csv_buffer.getvalue(), file_name="filtered_clonotypes.csv"
+        )

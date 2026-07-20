@@ -61,6 +61,15 @@ def main() -> None:
 
     df = load_dataset_from_sidebar()
 
+    st.sidebar.checkbox(
+        "Show download buttons (PNG/PDF/CSV)",
+        value=False,
+        key="show_download_buttons",
+        help="When disabled, download buttons are hidden and export computations are skipped for faster performance.",
+    )
+
+
+
     if page == "Single-subject by organ/cell":
         run_per_individual_page(df)
     elif page == "Cohort summary":

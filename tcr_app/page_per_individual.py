@@ -23,6 +23,7 @@ from tcr_app.core import (
     build_clonotype_color_map,
     build_clonotype_presence_count_histogram,
     build_clonotype_presence_grid_dataframe,
+    build_clonotype_total_count_distribution_histogram,
     build_clonotype_presence_grid_figure,
     build_entity_chord_figure,
     build_highlighted_tick_labels,
@@ -667,6 +668,20 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         else:
             with histogram_cols[1]:
                 st.info(f"No {lineage} clonotype-count plot available.")
+        dist_fig = build_clonotype_total_count_distribution_histogram(
+            col_summary_df=col_count_summary,
+            top_n=int(top_n),
+        )
+        if dist_fig is not None:
+            st.plotly_chart(dist_fig, width="stretch")
+            render_plot_download_buttons(
+                dist_fig,
+                base_filename=f"total_count_distribution_{lineage}_{mouse_selected}_{top_n_scope}".replace(" ", "_"),
+                key_prefix=f"tot_dist_{lineage}",
+                data=col_count_summary[["clonotype", "total"]],
+                data_filename=f"total_count_distribution_{lineage}_{mouse_selected}_{top_n_scope}.csv".replace(" ", "_"),
+                data_index=False,
+            )
         if lineage == "CD4" and lineage_plotted:
             render_clonotype_presence_grid_legend(int(top_n))
     if plotted_any_grid:

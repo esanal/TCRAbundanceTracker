@@ -15,6 +15,7 @@ from tcr_app.page_pooled import run_summary_all_individuals_pooled_page
 from tcr_app.page_all_clonotype_flow import run_all_clonotype_flow_page
 from tcr_app.page_public_clonotypes import run_public_clonotypes_page
 from tcr_app.page_pairwise import run_pairwise_comparison_page
+from tcr_app.page_organ_distribution import run_organ_distribution_page
 
 
 st.set_page_config(page_title="TCR Abundance Explorer", layout="wide")
@@ -56,6 +57,7 @@ def main() -> None:
             "Clonotype flow by subject",
             "Public clonotypes",
             "Pairwise comparison",
+            "Clonotype Organ Spread",
         ),
         index=0,
         help="Switch between single-subject, cohort, top-N, clonotype flow, public clonotype, and pairwise views.",
@@ -84,6 +86,8 @@ def main() -> None:
         run_pairwise_comparison_page(df)
     elif page == "Clonotype flow by subject":
         run_all_clonotype_flow_page(df)
+    elif page == "Clonotype Organ Spread":
+        run_organ_distribution_page(df)
 
 
 if __name__ == "__main__":

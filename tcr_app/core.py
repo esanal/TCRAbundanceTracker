@@ -21,6 +21,7 @@ import networkx as nx
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
@@ -1059,6 +1060,209 @@ def build_clonotype_presence_count_histogram(
         )
     else:
         fig.update_xaxes(tickangle=90)
+    return fig
+
+
+def build_clonotype_total_count_distribution_histogram(
+    col_summary_df: pd.DataFrame,
+    top_n: int,
+) -> Optional[go.Figure]:
+    if col_summary_df.empty or "total" not in col_summary_df.columns:
+        return None
+
+    counts = col_summary_df["total"].value_counts().sort_index()
+    max_total = int(counts.index.max()) if not counts.empty else 0
+    counts = counts.reindex(range(0, max_total + 1), fill_value=0)
+    plot_df = pd.DataFrame(
+        {"total_count": counts.index, "frequency": counts.values}
+    )
+
+    fig = px.bar(
+        plot_df,
+        x="total_count",
+        y="frequency",
+        color_discrete_sequence=["#1f77b4"],
+        labels={
+            "total_count": "Detection count",
+            "frequency": "Clonotype count",
+        },
+    )
+    fig.update_traces(
+        marker_line_width=0.8, marker_line_color="#1f77b4"
+    )
+    fig.update_layout(
+        title=f"Distribution of organ/cell-type detection counts (top {top_n})",
+        height=360,
+        margin={"l": 20, "r": 20, "t": 60, "b": 40},
+        bargap=0.15,
+        xaxis={
+            "dtick": 1,
+            "tickmode": "linear",
+        },
+        yaxis={"title": "Clonotype count"},
+    )
+    return fig
+
+
+def _kde_on_grid(values: List[int], x_grid: np.ndarray, bandwidth: float = 0.6) -> np.ndarray:
+    if not values:
+        return np.zeros_like(x_grid)
+    n = len(values)
+    pdf = np.zeros_like(x_grid)
+    for d in values:
+        pdf += np.exp(-0.5 * ((x_grid - d) / bandwidth) ** 2)
+    pdf /= (bandwidth * np.sqrt(2 * np.pi) * n)
+    max_pdf = pdf.max()
+    return pdf / max_pdf if max_pdf > 0 else pdf
+
+
+def build_clonotype_detection_ridge_figure(
+    per_organ_detection_counts: Dict[str, List[int]],
+    top_n: int,
+    mouse_id: str,
+    bandwidth: float = 0.6,
+) -> Optional[go.Figure]:
+    if not per_organ_detection_counts:
+        return None
+
+    organs = sorted(
+        per_organ_detection_counts.keys(),
+        key=lambda o: float(np.median(per_organ_detection_counts[o])),
+        reverse=True,
+    )
+
+    all_values = [v for vals in per_organ_detection_counts.values() for v in vals]
+    if not all_values:
+        return None
+
+    max_detection = max(all_values)
+
+    # Shared x grid — tight to data + 0.5 on each side
+    lo = min(all_values) - 0.5
+    hi = max(all_values) + 0.5
+    x_grid = np.linspace(lo, hi, max(50, int((hi - lo) * 40)))
+
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    ]
+
+    fig = go.Figure()
+    n_organs = len(organs)
+    ridge_height = 0.6
+
+    # Add traces from top to bottom
+    for i, organ in enumerate(organs):
+        values = per_organ_detection_counts[organ]
+        y_offset = (n_organs - 1 - i)
+        color = palette[i % len(palette)]
+
+        pdf_norm = _kde_on_grid(values, x_grid, bandwidth=bandwidth)
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_grid,
+                y=pdf_norm * ridge_height + y_offset,
+                mode="lines+markers",
+                name=organ,
+                line={"color": color, "width": 1.5},
+                marker={"size": 3, "color": color},
+                opacity=0.85,
+                hovertemplate=f"<b>%{{x}}</b> detection count<br>{organ}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=f"Detection count distribution — {mouse_id} (top {top_n})",
+        height=120 + 65 * n_organs,
+        margin={"l": 16, "r": 20, "t": 60, "b": 40},
+        xaxis={
+            "dtick": 1,
+            "tickmode": "linear",
+            "range": [lo - 0.5, hi + 0.5],
+            "title": "Detection count",
+        },
+        yaxis={
+            "tickvals": list(range(n_organs)),
+            "ticktext": list(reversed(organs)),
+            "range": [-0.3, n_organs - 1 + 1.0],
+            "title": None,
+            "showgrid": False,
+            "zeroline": False,
+        },
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+    )
+
+    return fig
+
+
+def build_clonotype_detection_histogram_figure(
+    per_organ_detection_counts: Dict[str, List[int]],
+    top_n: int,
+    mouse_id: str,
+) -> Optional[go.Figure]:
+    if not per_organ_detection_counts:
+        return None
+
+    organs = sorted(
+        per_organ_detection_counts.keys(),
+        key=lambda o: float(np.median(per_organ_detection_counts[o])),
+        reverse=True,
+    )
+
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    ]
+
+    n_organs = len(organs)
+    fig = make_subplots(
+        rows=n_organs,
+        cols=1,
+        subplot_titles=organs,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+    )
+
+    all_values: List[int] = []
+    for i, organ in enumerate(organs):
+        values = per_organ_detection_counts[organ]
+        all_values.extend(values)
+        fig.add_trace(
+            go.Histogram(
+                x=values,
+                name=organ,
+                marker_color=palette[i % len(palette)],
+                xbins={"size": 1},
+            ),
+            row=i + 1,
+            col=1,
+        )
+
+    max_detection = max(all_values) if all_values else len(organs)
+
+    row_height = 140
+    fig.update_layout(
+        title=f"Detection count distribution — {mouse_id} (top {top_n})",
+        height=60 + row_height * n_organs,
+        margin={"l": 20, "r": 20, "t": 60, "b": 40},
+        showlegend=False,
+        xaxis={
+            "dtick": 1,
+            "tickmode": "linear",
+            "range": [0.5, max_detection + 0.5],
+        },
+        xaxis_title="Detection count",
+    )
+
+    fig.update_xaxes(matches="x")
+    for i in range(1, n_organs):
+        fig.update_xaxes(
+            row=i + 1, col=1, title_text="" if i + 1 < n_organs else "Detection count"
+        )
+
     return fig
 
 
@@ -2175,11 +2379,23 @@ def build_public_clonotype_network_html(
         for cl in clist:
             clono_parents[cl].append(_org_id(m, org))
 
+    clono_groups: Dict[Tuple[str, ...], List[str]] = defaultdict(list)
     for cl in all_clonotypes:
         parent_ids = clono_parents.get(cl, [])
-        xs = [node_positions[pid][0] for pid in parent_ids if pid in node_positions]
-        avg_x = sum(xs) / len(xs) if xs else 0.0
-        node_positions[_clo_id(cl)] = (avg_x, y_levels["clonotype"])
+        group_key = tuple(sorted(parent_ids))
+        clono_groups[group_key].append(cl)
+
+    for group_key, members in clono_groups.items():
+        xs = [node_positions[pid][0] for pid in group_key if pid in node_positions]
+        center_x = sum(xs) / len(xs) if xs else 0.0
+        n = len(members)
+        if n == 1:
+            node_positions[_clo_id(members[0])] = (center_x, y_levels["clonotype"])
+        else:
+            spacing = max(x_gap * 0.35, 20.0)
+            start_x = center_x - spacing * (n - 1) / 2
+            for i, cl in enumerate(members):
+                node_positions[_clo_id(cl)] = (start_x + i * spacing, y_levels["clonotype"])
 
     net = Network(height="650px", width="100%", bgcolor="#ffffff", font_color="#222222")
     physics_enabled = physics_mode != "No physics"

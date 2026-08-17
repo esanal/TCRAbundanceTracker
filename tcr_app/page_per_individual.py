@@ -88,7 +88,7 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
 
     st.subheader("Abundance by Organ/Cell (Top Clonotypes)")
 
-    select_cols = st.columns(2)
+    select_cols = st.columns(3)
     organ_cell_options = sorted(filtered["organ_cell"].unique())
     with select_cols[0]:
         top_n_scope = st.selectbox(
@@ -107,6 +107,8 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
             value=min(10, max_clonotypes),
             step=1,
         )
+    with select_cols[2]:
+        sort_organ_cell = st.selectbox("Sort organ/cell axis by", ["organ", "trm"])
     clono_totals = (
         filtered[filtered["organ_cell"] == top_n_scope]
         .groupby("clonotype", as_index=False)["abundance"]
@@ -126,11 +128,23 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
     heatmap_pivot = heatmap_df.pivot(
         index="clonotype", columns="organ_cell", values="abundance"
     ).fillna(0)
+    organ_cell_axis_order = get_organ_cell_order(filtered, sort_organ_cell)
+    heatmap_pivot = heatmap_pivot.reindex(
+        index=selected_clonotypes,
+        columns=organ_cell_axis_order,
+        fill_value=0,
+    )
     heatmap_fig = px.imshow(
         heatmap_pivot,
         labels=dict(x="Organ/Cell", y="Clonotype", color="Abundance"),
         aspect="auto",
-        color_continuous_scale="viridis",
+        zmin=0,
+        zmax=float(heatmap_pivot.values.max()),
+        color_continuous_scale=[
+            (0.0, "white"),
+            (0.5, "blue"),
+            (1.0, "red"),
+        ],
     )
     heatmap_fig.update_layout(height=500)
     heatmap_x_categories = heatmap_pivot.columns.tolist()
@@ -183,7 +197,6 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         st.caption(
             "Open-circle markers indicate imputed 0 values per organ|cell (pseudo-0)."
         )
-    sort_organ_cell = st.selectbox("Sort organ/cell axis by", ["organ", "trm"])
     lineage_filtered = filtered[filtered["clonotype"].isin(selected_clonotypes)].copy()
     lineage_filtered["cd_group"] = lineage_filtered["cell_type"].apply(classify_cd4_cd8)
     clonotype_color_map = build_clonotype_color_map(selected_clonotypes)

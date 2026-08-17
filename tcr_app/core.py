@@ -2594,9 +2594,37 @@ def build_public_clonotype_network_html(
     return net.generate_html()
 
 
-def _load_and_normalize_dataset(selected_dataset: str, uploaded_file) -> pd.DataFrame:
+def _resolve_example_dataset_source(selected_dataset: str):
+    """Resolve the source for a bundled example dataset.
+
+    Returns the file Path when the fixed default location exists. When the fixed
+    location is missing, renders a sidebar prompt asking the user to locate the
+    file and returns the uploaded file, or None if the user has not provided it
+    yet. Returns None for datasets without a fixed path (bundled fallback).
+    """
+    path_str = EXAMPLE_DATASETS.get(selected_dataset)
+    if path_str is None:
+        return None
+    resolved = Path(path_str).expanduser()
+    if resolved.exists():
+        return resolved
+    st.warning(
+        f"Dataset **{selected_dataset}** was not found at its default location:\n\n"
+        f"`{resolved}`\n\nPlease locate the data file to continue."
+    )
+    return st.file_uploader(
+        "Locate dataset file",
+        type=["csv"],
+        key=f"locate_{selected_dataset}",
+        help=f"Upload the CSV for '{selected_dataset}'.",
+    )
+
+
+def _load_and_normalize_dataset(selected_dataset: str, uploaded_file, located_source=None) -> pd.DataFrame:
     """Read CSV, normalize columns, validate, coerce types. Not cached."""
-    if selected_dataset:
+    if located_source is not None:
+        df = pd.read_csv(located_source, low_memory=False)
+    elif selected_dataset:
         df = load_example_dataframe(selected_dataset)
     else:
         df = pd.read_csv(uploaded_file, low_memory=False)
@@ -2620,6 +2648,9 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
     Normalizes column names, validates required columns, coerces types,
     and creates the composite 'organ_cell' column.
 
+    When a bundled dataset's fixed path is missing, the user is prompted to
+    locate the file via a sidebar uploader before loading proceeds.
+
     The loaded DataFrame is cached in session_state to avoid re-reading CSV
     on every Streamlit rerun. The cache is invalidated when the dataset changes.
     """
@@ -2629,9 +2660,23 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
         selected_dataset = st.selectbox(
             "Choose example dataset", dataset_options, index=1
         )
-        uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
+        use_example = selected_dataset != "None (upload your own file)"
 
-    use_example = selected_dataset != "None (upload your own file)"
+        located_source = None
+        located_required = False
+        if use_example:
+            located_required = EXAMPLE_DATASETS.get(selected_dataset) is not None
+            located_source = _resolve_example_dataset_source(selected_dataset)
+            uploaded_file = None
+        else:
+            uploaded_file = st.file_uploader("Upload clonotype dataset", type=["csv"])
+
+    if located_required and located_source is None:
+        if get_script_run_ctx() is None:
+            raise SystemExit(
+                f"Dataset '{selected_dataset}' not found; no location provided."
+            )
+        st.stop()
 
     if use_example:
         st.info(f"Using dataset: {selected_dataset}")
@@ -2641,7 +2686,15 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
             raise SystemExit("No file uploaded. Run with `streamlit run app.py`.")
         st.stop()
 
-    dataset_key = selected_dataset if use_example else (uploaded_file.name if uploaded_file else "")
+    if use_example:
+        if located_source is None:
+            dataset_key = selected_dataset
+        elif isinstance(located_source, Path):
+            dataset_key = f"{selected_dataset}::{located_source}"
+        else:
+            dataset_key = f"{selected_dataset}::{located_source.name}"
+    else:
+        dataset_key = uploaded_file.name if uploaded_file else ""
 
     # Return cached DataFrame if the dataset hasn't changed
     if (
@@ -2654,6 +2707,7 @@ def load_dataset_from_sidebar() -> pd.DataFrame:
         df = _load_and_normalize_dataset(
             selected_dataset if use_example else None,
             uploaded_file,
+            located_source,
         )
     except Exception as exc:
         st.error(f"Unable to read file: {exc}")

@@ -23,6 +23,7 @@ from tcr_app.core import (
     build_clonotype_color_map,
     build_clonotype_presence_count_histogram,
     build_clonotype_presence_grid_dataframe,
+    build_clonotype_presence_grid_matrix,
     build_clonotype_total_count_distribution_histogram,
     build_clonotype_presence_grid_figure,
     build_entity_chord_figure,
@@ -606,20 +607,23 @@ def run_per_individual_page(df: pd.DataFrame) -> None:
         plotted_any_grid = True
         lineage_plotted = True
         st.plotly_chart(grid_fig, width="stretch")
-        render_plot_download_buttons(
-            grid_fig,
-            base_filename=f"clonotype_presence_grid_{lineage}_{top_n_scope}".replace(" ", "_"),
-            key_prefix=f"lineage_grid_{lineage}",
-            data=lineage_grid_df,
-            data_filename=f"presence_grid_{lineage}_{top_n_scope}.csv".replace(" ", "_"),
-            data_index=False,
-        )
         lineage_grid_counts = build_clonotype_presence_grid_dataframe(
             df=lineage_grid_df,
             selected_clonotypes=lineage_grid_clonotypes,
             top_n=int(top_n),
             query_top_n=query_top_n,
             row_categories=shared_grid_rows,
+        )
+        lineage_grid_matrix = build_clonotype_presence_grid_matrix(lineage_grid_counts, reference_organ_cell=top_n_scope)
+        render_plot_download_buttons(
+            grid_fig,
+            base_filename=f"clonotype_presence_grid_{lineage}_{top_n_scope}".replace(" ", "_"),
+            key_prefix=f"lineage_grid_{lineage}",
+            data=lineage_grid_counts,
+            data_filename=f"clonotype_presence_grid_status_{lineage}_{top_n_scope}.csv".replace(" ", "_"),
+            data_index=False,
+            matrix_data=lineage_grid_matrix,
+            matrix_filename=f"clonotype_presence_grid_matrix_{lineage}_{top_n_scope}.csv".replace(" ", "_"),
         )
         row_count_summary, col_count_summary = summarize_clonotype_presence_grid_counts(
             grid_df=lineage_grid_counts,

@@ -87,6 +87,7 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
         return
 
     progress_bar = st.progress(0, text="Processing individuals...")
+    pooled_per_organ: Dict[str, List[int]] = {}
 
     for mouse_idx, mouse_id in enumerate(mice):
         progress_bar.progress(
@@ -120,6 +121,7 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
                 detection_counts.append(count)
 
             per_organ[organ] = detection_counts
+            pooled_per_organ.setdefault(organ, []).extend(detection_counts)
 
         if not per_organ:
             continue
@@ -173,6 +175,56 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
                 data_filename=f"{safe_fn}.csv",
                 data_index=False,
             )
+
+    if pooled_per_organ:
+        combined_mouse_id = "All individuals (pooled)"
+        if "Ridge" in plot_style:
+            fig = build_clonotype_detection_ridge_figure(
+                per_organ_detection_counts=pooled_per_organ,
+                top_n=int(top_n),
+                mouse_id=combined_mouse_id,
+                bandwidth=kde_bandwidth,
+            )
+        else:
+            fig = build_clonotype_detection_histogram_figure(
+                per_organ_detection_counts=pooled_per_organ,
+                top_n=int(top_n),
+                mouse_id=combined_mouse_id,
+            )
+        if fig is not None:
+            with st.expander(
+                f"{combined_mouse_id} ({len(pooled_per_organ)} organ/cell types, top {int(top_n)})",
+                expanded=False,
+            ):
+                st.plotly_chart(fig, width="stretch")
+
+                csv_records: List[Dict[str, object]] = []
+                for organ, counts in pooled_per_organ.items():
+                    for c in counts:
+                        csv_records.append(
+                            {
+                                "mouse": "all",
+                                "organ_cell": organ,
+                                "detection_count": c,
+                            }
+                        )
+
+                csv_data = pd.DataFrame(csv_records) if csv_records else None
+                style_prefix = "ridge" if "Ridge" in plot_style else "hist"
+                safe_fn = (
+                    f"{style_prefix}_all_{chain_selected.lower()}_top{int(top_n)}"
+                    .replace(" ", "_")
+                    .replace("|", "_")
+                )
+
+                render_plot_download_buttons(
+                    fig,
+                    base_filename=safe_fn,
+                    key_prefix=f"{style_prefix}_all",
+                    data=csv_data,
+                    data_filename=f"{safe_fn}.csv",
+                    data_index=False,
+                )
 
     progress_bar.empty()
     st.success(f"Done — {n_mice} individual(s) processed.")

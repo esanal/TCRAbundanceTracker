@@ -929,6 +929,60 @@ def build_clonotype_presence_grid_dataframe(
     return pd.DataFrame(grid_records)
 
 
+def build_clonotype_presence_grid_matrix(
+    grid_df: pd.DataFrame,
+    reference_organ_cell: Optional[str] = None,
+) -> pd.DataFrame:
+    """Pivot the long-format presence grid into a matrix view.
+
+    Rows = organ_cell, columns = clonotypes (preserving grid order).
+    Cell values: 2 = Top-N in row (red), 1 = present but not Top-N (blue),
+    0 = not present (empty).
+
+    The reference row (the organ|cell whose Top-N clonotypes define the columns)
+    is marked with a trailing ``*`` in its index label. A legend explaining the
+    values is attached to ``matrix.attrs["legend"]``.
+    """
+    if grid_df.empty:
+        return pd.DataFrame()
+
+    statuses = set(grid_df["status"])
+    top_label = next((s for s in statuses if s.startswith("Top-")), None)
+    present_label = next((s for s in statuses if s.startswith("Present")), None)
+    value_map = {"Not present": 0}
+    if present_label is not None:
+        value_map[present_label] = 1
+    if top_label is not None:
+        value_map[top_label] = 2
+
+    matrix = (
+        grid_df.pivot(index="organ_cell", columns="clonotype", values="status")
+        .map(value_map.get)
+        .fillna(0)
+        .astype(int)
+    )
+    row_order = list(dict.fromkeys(grid_df["organ_cell"]))
+    col_order = list(dict.fromkeys(grid_df["clonotype"]))
+    matrix = matrix.reindex(index=row_order, columns=col_order)
+
+    legend_lines = [
+        "Matrix legend:",
+        f"  2 = {top_label} (red dot)",
+        f"  1 = {present_label} (blue dot)",
+        "  0 = not present (empty)",
+    ]
+    if reference_organ_cell is not None:
+        legend_lines.append(f"Reference row (marked with '*') = {reference_organ_cell}")
+        legend_lines.append("  Columns are the Top-N clonotypes of the reference row, ordered by abundance")
+        if reference_organ_cell in matrix.index:
+            matrix.rename(
+                index={reference_organ_cell: f"{reference_organ_cell} *"},
+                inplace=True,
+            )
+    matrix.attrs["legend"] = legend_lines
+    return matrix
+
+
 def summarize_clonotype_presence_grid_counts(
     grid_df: pd.DataFrame,
     top_in_row_label: str,
@@ -1212,18 +1266,13 @@ def build_clonotype_detection_histogram_figure(
         reverse=True,
     )
 
-    palette = [
-        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-    ]
-
     n_organs = len(organs)
     fig = make_subplots(
         rows=n_organs,
         cols=1,
         subplot_titles=organs,
         shared_xaxes=True,
-        vertical_spacing=0.04,
+        vertical_spacing=0.09,
     )
 
     all_values: List[int] = []
@@ -1234,7 +1283,6 @@ def build_clonotype_detection_histogram_figure(
             go.Histogram(
                 x=values,
                 name=organ,
-                marker_color=palette[i % len(palette)],
                 xbins={"size": 1},
             ),
             row=i + 1,
@@ -1242,6 +1290,9 @@ def build_clonotype_detection_histogram_figure(
         )
 
     max_detection = max(all_values) if all_values else len(organs)
+
+    for i in range(n_organs):
+        fig.update_yaxes(range=[0, max_detection * 1.15], row=i + 1, col=1)
 
     row_height = 140
     fig.update_layout(
@@ -1254,14 +1305,9 @@ def build_clonotype_detection_histogram_figure(
             "tickmode": "linear",
             "range": [0.5, max_detection + 0.5],
         },
-        xaxis_title="Detection count",
     )
 
     fig.update_xaxes(matches="x")
-    for i in range(1, n_organs):
-        fig.update_xaxes(
-            row=i + 1, col=1, title_text="" if i + 1 < n_organs else "Detection count"
-        )
 
     return fig
 
@@ -1428,9 +1474,13 @@ def render_plot_download_buttons(
     data: pd.DataFrame | None = None,
     data_filename: str | None = None,
     data_index: bool = True,
+    matrix_data: pd.DataFrame | None = None,
+    matrix_filename: str | None = None,
 ) -> None:
-    """Render download buttons (PNG, PDF, and optionally CSV of the backing data).
+    """Render download buttons (PNG, PDF, and optionally CSVs of the backing data).
 
+    When both ``data`` (long format) and ``matrix_data`` (pivoted grid) are given,
+    two CSV buttons are shown: the per-cell status table and the matrix view.
     Silently handles cases where Kaleido is not available for image export.
     """
     if not st.session_state.get("show_download_buttons", True):
@@ -1459,7 +1509,14 @@ def render_plot_download_buttons(
     except Exception:
         pdf_bytes = None
 
-    col_widths = [1, 1, 1, 5] if data is not None else [1, 1, 6]
+    has_data = data is not None
+    has_matrix = matrix_data is not None
+    if has_data and has_matrix:
+        col_widths = [1, 1, 1, 1, 4]
+    elif has_data:
+        col_widths = [1, 1, 1, 5]
+    else:
+        col_widths = [1, 1, 6]
     cols = st.columns(col_widths, gap="small")
     with cols[0]:
         if png_bytes is not None:
@@ -1492,6 +1549,26 @@ def render_plot_download_buttons(
                 file_name=csv_filename,
                 mime="text/csv",
                 key=f"{key_prefix}_download_csv",
+                width='stretch',
+            )
+    if matrix_data is not None:
+        matrix_lines: List[str] = []
+        matrix_buffer = io.StringIO()
+        matrix_data.to_csv(matrix_buffer, index=True)
+        matrix_lines.append(matrix_buffer.getvalue().rstrip("\n"))
+        legend_lines = matrix_data.attrs.get("legend")
+        if legend_lines:
+            matrix_lines.append("#")
+            matrix_lines.extend(f"# {line}" for line in legend_lines)
+        matrix_name = matrix_filename or f"{safe_filename}_matrix.csv"
+        matrix_col = cols[3] if data is not None else cols[2]
+        with matrix_col:
+            st.download_button(
+                "CSV (matrix)",
+                data="\n".join(matrix_lines),
+                file_name=matrix_name,
+                mime="text/csv",
+                key=f"{key_prefix}_download_matrix_csv",
                 width='stretch',
             )
 

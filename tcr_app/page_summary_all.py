@@ -24,6 +24,7 @@ from tcr_app.core import (
     build_aggregate_row_count_figure,
     build_clonotype_presence_count_histogram,
     build_clonotype_presence_grid_dataframe,
+    build_clonotype_presence_grid_matrix,
     build_clonotype_presence_grid_figure,
     build_highlighted_tick_labels,
     calculate_mouse_correlation,
@@ -514,22 +515,25 @@ def run_summary_all_page(df: pd.DataFrame) -> None:
                     plotted_any_grid = True
                     lineage_plotted = True
                     st.plotly_chart(summary_grid_fig, width="stretch")
-                    render_plot_download_buttons(
-                        summary_grid_fig,
-                        base_filename=(
-                            f"clonotype_presence_grid_{lineage}_{mouse_id}_{subset_selected}"
-                        ).replace(" ", "_"),
-                        key_prefix=f"summary_grid_{lineage}_{mouse_id}",
-                        data=mouse_df,
-                        data_filename=f"presence_grid_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
-                        data_index=False,
-                    )
                     summary_grid_counts = build_clonotype_presence_grid_dataframe(
                         df=mouse_df,
                         selected_clonotypes=mouse_grid_clonotypes,
                         top_n=int(top_n),
                         query_top_n=query_top_n_sum,
                         row_categories=shared_summary_grid_rows,
+                    )
+                    summary_grid_matrix = build_clonotype_presence_grid_matrix(summary_grid_counts, reference_organ_cell=subset_selected)
+                    render_plot_download_buttons(
+                        summary_grid_fig,
+                        base_filename=(
+                            f"clonotype_presence_grid_{lineage}_{mouse_id}_{subset_selected}"
+                        ).replace(" ", "_"),
+                        key_prefix=f"summary_grid_{lineage}_{mouse_id}",
+                        data=summary_grid_counts,
+                        data_filename=f"clonotype_presence_grid_status_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
+                        data_index=False,
+                        matrix_data=summary_grid_matrix,
+                        matrix_filename=f"clonotype_presence_grid_matrix_{lineage}_{mouse_id}_{subset_selected}.csv".replace(" ", "_"),
                     )
                     row_count_summary, col_count_summary = summarize_clonotype_presence_grid_counts(
                         grid_df=summary_grid_counts,

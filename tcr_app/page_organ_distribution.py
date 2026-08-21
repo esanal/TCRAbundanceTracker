@@ -3,10 +3,12 @@
 For each individual, iterates over the selected organs. For each organ, finds the
 top N clonotypes by abundance and counts how many of the selected organs (origin
 included) detect each clonotype. Displays either a ridge plot or an overlaid
-histogram per individual.
+histogram per individual. The downloadable CSV is a presence matrix: one row per
+clonotype with a 0/1 column for every compared organ/cell, so the row sum of those
+columns equals the detection count.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -18,6 +20,103 @@ from tcr_app.core import (
 )
 
 
+def _compute_membership(
+    mouse_df: pd.DataFrame,
+    organ_cells_selected: List[str],
+    top_n: int,
+) -> Tuple[
+    Dict[str, List[str]],
+    Dict[str, Dict[str, Set[str]]],
+    Dict[str, List[int]],
+]:
+    """For each reference organ/cell, find its top clonotypes and their spread.
+
+    Returns ``(per_organ_top, per_organ_membership, per_organ_detection_counts)``:
+    - top clonotypes: reference organ -> clonotypes ordered by abundance (desc)
+    - membership: reference organ -> clonotype -> set of organ/cells detected in
+    - detection counts: reference organ -> per-clonotype detection count (len of
+      the membership set)
+    """
+    clonotype_organs: Dict[str, Set[str]] = {}
+    for clonotype, organ_cell in zip(mouse_df["clonotype"], mouse_df["organ_cell"]):
+        clonotype_organs.setdefault(str(clonotype), set()).add(str(organ_cell))
+
+    per_organ_top: Dict[str, List[str]] = {}
+    per_organ_membership: Dict[str, Dict[str, Set[str]]] = {}
+    per_organ_detection_counts: Dict[str, List[int]] = {}
+
+    for organ in organ_cells_selected:
+        organ_df = mouse_df[mouse_df["organ_cell"] == organ]
+        if organ_df.empty:
+            continue
+
+        top_clonotypes = (
+            organ_df.groupby("clonotype")["abundance"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(int(top_n))
+            .index.tolist()
+        )
+        if not top_clonotypes:
+            continue
+
+        membership: Dict[str, Set[str]] = {}
+        detection_counts: List[int] = []
+        for clonotype in top_clonotypes:
+            clonotype = str(clonotype)
+            detected = clonotype_organs.get(clonotype, set())
+            membership[clonotype] = detected
+            detection_counts.append(len(detected))
+
+        per_organ_top[organ] = top_clonotypes
+        per_organ_membership[organ] = membership
+        per_organ_detection_counts[organ] = detection_counts
+
+    return per_organ_top, per_organ_membership, per_organ_detection_counts
+
+
+def _merge_pooled_membership(
+    pooled_membership: Dict[str, Dict[str, Set[str]]],
+    per_organ_membership: Dict[str, Dict[str, Set[str]]],
+) -> None:
+    """Merge one mouse's membership into the pooled one (union of tissues across mice)."""
+    for organ, membership in per_organ_membership.items():
+        target = pooled_membership.setdefault(organ, {})
+        for clonotype, detected in membership.items():
+            target.setdefault(clonotype, set()).update(detected)
+
+
+def _build_presence_csv(
+    mouse_id: str,
+    per_organ_top: Dict[str, List[str]],
+    per_organ_membership: Dict[str, Dict[str, Set[str]]],
+    organ_cells_selected: List[str],
+) -> pd.DataFrame:
+    """Build the presence-matrix CSV for download.
+
+    One row per (reference organ/cell, clonotype, rank). For every compared
+    organ/cell there is a 0/1 column (1 = clonotype detected there), and the row
+    sum of those columns equals ``detection_count``.
+    """
+    records: List[Dict[str, object]] = []
+    for organ, clonotypes in per_organ_top.items():
+        membership = per_organ_membership.get(organ, {})
+        for rank, clonotype in enumerate(clonotypes, start=1):
+            clonotype = str(clonotype)
+            detected = membership.get(clonotype, set())
+            row: Dict[str, object] = {
+                "mouse": mouse_id,
+                "reference_organ_cell": organ,
+                "clonotype": clonotype,
+                "top_rank": rank,
+            }
+            for oc in organ_cells_selected:
+                row[oc] = 1 if oc in detected else 0
+            row["detection_count"] = len(detected)
+            records.append(row)
+    return pd.DataFrame(records) if records else pd.DataFrame()
+
+
 def run_organ_distribution_page(df: pd.DataFrame) -> None:
     st.title("TCR Abundance Explorer")
     st.subheader("Clonotype Organ Spread")
@@ -25,7 +124,9 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
         "For each individual, find the top N clonotypes per organ/cell by abundance, "
         "then count how many of the selected organs detect each clonotype. "
         "Ridge lines show the distribution for each organ's top N clonotypes; "
-        "choose a histogram overlay for a direct frequency view."
+        "choose a histogram overlay for a direct frequency view. The CSV download "
+        "is a presence matrix: one row per clonotype with a 0/1 column per compared "
+        "organ/cell, so the row sum of those columns equals the detection count."
     )
 
     with st.sidebar:
@@ -88,6 +189,7 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
 
     progress_bar = st.progress(0, text="Processing individuals...")
     pooled_per_organ: Dict[str, List[int]] = {}
+    pooled_membership: Dict[str, Dict[str, Set[str]]] = {}
 
     for mouse_idx, mouse_id in enumerate(mice):
         progress_bar.progress(
@@ -96,46 +198,27 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
         )
 
         mouse_df = filtered[filtered["mouse"] == mouse_id]
-        per_organ: Dict[str, List[int]] = {}
+        per_organ_top, per_organ_membership, per_organ_detection_counts = (
+            _compute_membership(mouse_df, organ_cells_selected, int(top_n))
+        )
 
-        for organ in organ_cells_selected:
-            organ_df = mouse_df[mouse_df["organ_cell"] == organ]
-            if organ_df.empty:
-                continue
-
-            top_clonotypes = (
-                organ_df.groupby("clonotype")["abundance"]
-                .sum()
-                .sort_values(ascending=False)
-                .head(int(top_n))
-                .index.tolist()
-            )
-            if not top_clonotypes:
-                continue
-
-            detection_counts: List[int] = []
-            for clonotype in top_clonotypes:
-                count = mouse_df[mouse_df["clonotype"] == clonotype][
-                    "organ_cell"
-                ].nunique()
-                detection_counts.append(count)
-
-            per_organ[organ] = detection_counts
-            pooled_per_organ.setdefault(organ, []).extend(detection_counts)
-
-        if not per_organ:
+        if not per_organ_top:
             continue
+
+        for organ, counts in per_organ_detection_counts.items():
+            pooled_per_organ.setdefault(organ, []).extend(counts)
+        _merge_pooled_membership(pooled_membership, per_organ_membership)
 
         if "Ridge" in plot_style:
             fig = build_clonotype_detection_ridge_figure(
-                per_organ_detection_counts=per_organ,
+                per_organ_detection_counts=per_organ_detection_counts,
                 top_n=int(top_n),
                 mouse_id=mouse_id,
                 bandwidth=kde_bandwidth,
             )
         else:
             fig = build_clonotype_detection_histogram_figure(
-                per_organ_detection_counts=per_organ,
+                per_organ_detection_counts=per_organ_detection_counts,
                 top_n=int(top_n),
                 mouse_id=mouse_id,
             )
@@ -143,23 +226,14 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
             continue
 
         with st.expander(
-            f"{mouse_id} ({len(per_organ)} organ/cell types, top {int(top_n)})",
+            f"{mouse_id} ({len(per_organ_top)} organ/cell types, top {int(top_n)})",
             expanded=(mouse_idx == 0),
         ):
             st.plotly_chart(fig, width="stretch")
 
-            csv_records: List[Dict[str, object]] = []
-            for organ, counts in per_organ.items():
-                for c in counts:
-                    csv_records.append(
-                        {
-                            "mouse": mouse_id,
-                            "organ_cell": organ,
-                            "detection_count": c,
-                        }
-                    )
-
-            csv_data = pd.DataFrame(csv_records) if csv_records else None
+            csv_data = _build_presence_csv(
+                mouse_id, per_organ_top, per_organ_membership, organ_cells_selected
+            )
             style_prefix = "ridge" if "Ridge" in plot_style else "hist"
             safe_fn = (
                 f"{style_prefix}_{chain_selected.lower()}_{mouse_id}_top{int(top_n)}"
@@ -198,18 +272,16 @@ def run_organ_distribution_page(df: pd.DataFrame) -> None:
             ):
                 st.plotly_chart(fig, width="stretch")
 
-                csv_records: List[Dict[str, object]] = []
-                for organ, counts in pooled_per_organ.items():
-                    for c in counts:
-                        csv_records.append(
-                            {
-                                "mouse": "all",
-                                "organ_cell": organ,
-                                "detection_count": c,
-                            }
-                        )
-
-                csv_data = pd.DataFrame(csv_records) if csv_records else None
+                pooled_top: Dict[str, List[str]] = {
+                    organ: sorted(
+                        membership,
+                        key=lambda c: (-len(membership[c]), c),
+                    )
+                    for organ, membership in pooled_membership.items()
+                }
+                csv_data = _build_presence_csv(
+                    "all", pooled_top, pooled_membership, organ_cells_selected
+                )
                 style_prefix = "ridge" if "Ridge" in plot_style else "hist"
                 safe_fn = (
                     f"{style_prefix}_all_{chain_selected.lower()}_top{int(top_n)}"

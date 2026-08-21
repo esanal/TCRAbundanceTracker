@@ -1267,12 +1267,13 @@ def build_clonotype_detection_histogram_figure(
     )
 
     n_organs = len(organs)
+    max_spacing = 0.95 / max(n_organs - 1, 1)
     fig = make_subplots(
         rows=n_organs,
         cols=1,
         subplot_titles=organs,
         shared_xaxes=True,
-        vertical_spacing=0.09,
+        vertical_spacing=min(0.09, max_spacing),
     )
 
     all_values: List[int] = []
